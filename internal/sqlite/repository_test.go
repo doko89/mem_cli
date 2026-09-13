@@ -132,6 +132,67 @@ func TestExpiredMemoriesAreHiddenFromNormalRetrieval(t *testing.T) {
 	}
 }
 
+func TestHierarchicalNamespaceQueriesIncludeSubtree(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	if _, _, err := service.CreateNamespace(ctx, "proj/kriskris"); err != nil {
+		t.Fatalf("create parent namespace: %v", err)
+	}
+	if _, _, err := service.CreateNamespace(ctx, "proj/kriskris/api"); err != nil {
+		t.Fatalf("create child namespace: %v", err)
+	}
+	parentMemory, err := service.AddMemory(ctx, app.AddInput{
+		Namespace: "proj/kriskris",
+		Subject:   "payments",
+		Type:      "fact",
+		Content:   "Xendit handles payment callbacks.",
+	})
+	if err != nil {
+		t.Fatalf("add parent memory: %v", err)
+	}
+	childMemory, err := service.AddMemory(ctx, app.AddInput{
+		Namespace: "proj/kriskris/api",
+		Subject:   "quality",
+		Type:      "fact",
+		Content:   "API coverage is enforced at 90 percent.",
+	})
+	if err != nil {
+		t.Fatalf("add child memory: %v", err)
+	}
+
+	list, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "proj/kriskris", Subtree: true, Limit: 10})
+	if err != nil {
+		t.Fatalf("hierarchical list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected parent and child memories, got %#v", list)
+	}
+
+	search, err := service.SearchMemories(ctx, app.SearchFilter{Query: "coverage", NamespaceID: "proj/kriskris", Subtree: true})
+	if err != nil {
+		t.Fatalf("hierarchical search: %v", err)
+	}
+	if len(search) != 1 || search[0].ID != childMemory.ID {
+		t.Fatalf("expected child search hit, got %#v", search)
+	}
+
+	export, err := service.ExportMemories(ctx, "proj/kriskris", true)
+	if err != nil {
+		t.Fatalf("hierarchical export: %v", err)
+	}
+	if len(export) != 2 {
+		t.Fatalf("expected export to include subtree, got %#v", export)
+	}
+
+	exact, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "proj/kriskris", Subtree: false, Limit: 10})
+	if err != nil {
+		t.Fatalf("exact list: %v", err)
+	}
+	if len(exact) != 1 || exact[0].ID != parentMemory.ID {
+		t.Fatalf("expected exact parent-only list, got %#v", exact)
+	}
+}
+
 func TestNamespaceDeleteRequiresExplicitRecursion(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()

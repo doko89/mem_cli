@@ -434,8 +434,8 @@ func (r *Repository) deleteMemory(ctx context.Context, id string) error {
 }
 
 func (r *Repository) listMemories(ctx context.Context, filter app.MemoryFilter) ([]domain.Memory, error) {
-	query := memorySelect() + ` WHERE m.namespace_id = ?`
-	args := []any{filter.NamespaceID}
+	query := memorySelect() + ` WHERE ` + namespaceScope(filter.NamespaceID, filter.Subtree)
+	args := namespaceScopeArgs(filter.NamespaceID, filter.Subtree)
 	if filter.Subject != "" {
 		query += ` AND m.subject = ?`
 		args = append(args, filter.Subject)
@@ -471,8 +471,9 @@ func (r *Repository) searchMemories(ctx context.Context, filter app.SearchFilter
 		FROM memories_fts
 		JOIN memories m ON m.id = memories_fts.memory_id
 		JOIN namespaces n ON n.id = m.namespace_id
-		WHERE memories_fts MATCH ? AND m.namespace_id = ? AND (m.expires_at IS NULL OR m.expires_at >= ?)`
-	args := []any{ftsQuery, filter.NamespaceID, timeNow()}
+		WHERE memories_fts MATCH ? AND ` + namespaceScope(filter.NamespaceID, filter.Subtree) + ` AND (m.expires_at IS NULL OR m.expires_at >= ?)`
+	args := append([]any{ftsQuery}, namespaceScopeArgs(filter.NamespaceID, filter.Subtree)...)
+	args = append(args, timeNow())
 	if filter.Subject != "" {
 		query += ` AND m.subject = ?`
 		args = append(args, filter.Subject)
@@ -687,6 +688,27 @@ func timeNow() string {
 func likePrefix(prefix string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return replacer.Replace(prefix) + `/%`
+}
+
+func namespaceScope(namespace string, subtree bool) string {
+	if subtree {
+		return `EXISTS (
+			SELECT 1 FROM namespaces scope
+			WHERE scope.id = m.namespace_id
+			  AND (scope.normalized_name = ? OR scope.normalized_name LIKE ? ESCAPE '\')
+		)`
+	}
+	return `EXISTS (
+		SELECT 1 FROM namespaces scope
+		WHERE scope.id = m.namespace_id AND scope.normalized_name = ?
+	)`
+}
+
+func namespaceScopeArgs(namespace string, subtree bool) []any {
+	if subtree {
+		return []any{namespace, likePrefix(namespace)}
+	}
+	return []any{namespace}
 }
 
 var ftsSeparators = regexp.MustCompile(`[^\p{L}\p{N}_]+`)

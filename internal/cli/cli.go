@@ -68,6 +68,7 @@ type options struct {
 	arguments    []string
 	changed      map[string]bool
 	clearExpiry  bool
+	subtree      bool
 }
 
 var currentCommand string
@@ -233,6 +234,7 @@ func listCommand(options *options) *cobra.Command {
 				Subject:     options.subject,
 				Type:        domain.MemoryType(options.memoryType),
 				Tag:         options.tag,
+				Subtree:     options.subtree,
 				Limit:       options.limit,
 			})
 			if err != nil {
@@ -243,6 +245,7 @@ func listCommand(options *options) *cobra.Command {
 	}
 	addNamespaceFlag(command, options)
 	addFilterFlags(command, options)
+	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().IntVar(&options.limit, "limit", 100, "maximum number of memories")
 	return command
 }
@@ -262,6 +265,7 @@ func searchCommand(options *options) *cobra.Command {
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.query, "query", "", "full-text query")
 	addFilterFlags(command, options)
+	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of results")
 	_ = command.MarkFlagRequired("query")
 	return command
@@ -352,6 +356,7 @@ func contextCommand(options *options) *cobra.Command {
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.query, "query", "", "natural-language or keyword query")
 	addFilterFlags(command, options)
+	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of context items")
 	_ = command.MarkFlagRequired("query")
 	return command
@@ -384,7 +389,7 @@ func exportCommand(options *options) *cobra.Command {
 		Use:   "export",
 		Short: "Export namespace memories",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			memories, err := service.ExportMemories(ctx, options.namespace)
+			memories, err := service.ExportMemories(ctx, options.namespace, options.subtree)
 			if err != nil {
 				return nil, err
 			}
@@ -395,6 +400,7 @@ func exportCommand(options *options) *cobra.Command {
 		}),
 	}
 	addNamespaceFlag(command, options)
+	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().StringVar(&options.format, "format", "json", "export format: json or markdown")
 	_ = command.MarkFlagRequired("namespace")
 	return command
@@ -460,6 +466,7 @@ func searchFilter(options *options) app.SearchFilter {
 		Subject:     options.subject,
 		Type:        domain.MemoryType(options.memoryType),
 		Tag:         options.tag,
+		Subtree:     options.subtree,
 		Limit:       options.limit,
 	}
 }

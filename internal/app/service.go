@@ -61,6 +61,7 @@ type MemoryFilter struct {
 	Subject        string
 	Type           domain.MemoryType
 	Tag            string
+	Subtree        bool
 	IncludeExpired bool
 	Limit          int
 }
@@ -71,6 +72,7 @@ type SearchFilter struct {
 	Subject     string
 	Type        domain.MemoryType
 	Tag         string
+	Subtree     bool
 	Limit       int
 }
 
@@ -174,7 +176,7 @@ func (s *Service) ListMemories(ctx context.Context, filter MemoryFilter) ([]doma
 	if err != nil {
 		return nil, err
 	}
-	filter.NamespaceID = namespace.ID
+	filter.NamespaceID = namespace.NormalizedName
 	return s.memories.List(ctx, filter)
 }
 
@@ -195,7 +197,7 @@ func (s *Service) SearchMemories(ctx context.Context, filter SearchFilter) ([]do
 	if err != nil {
 		return nil, err
 	}
-	filter.NamespaceID = namespace.ID
+	filter.NamespaceID = namespace.NormalizedName
 	return s.memories.Search(ctx, filter)
 }
 
@@ -274,12 +276,12 @@ func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memo
 	})
 }
 
-func (s *Service) ExportMemories(ctx context.Context, namespace string) ([]domain.Memory, error) {
+func (s *Service) ExportMemories(ctx context.Context, namespace string, subtree bool) ([]domain.Memory, error) {
 	target, err := s.namespaces.Get(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
-	return s.memories.List(ctx, MemoryFilter{NamespaceID: target.ID, IncludeExpired: true, Limit: 10000})
+	return s.memories.List(ctx, MemoryFilter{NamespaceID: target.NormalizedName, Subtree: subtree, IncludeExpired: true, Limit: 10000})
 }
 
 func validateMemoryFields(subject, content string) error {
