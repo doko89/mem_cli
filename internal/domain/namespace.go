@@ -5,12 +5,12 @@ import (
 )
 
 type Namespace struct {
-	ID             string
-	Name           string
-	NormalizedName string
-	ParentID       string
-	Description    string
-	CreatedAt      string
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	NormalizedName string `json:"normalized_name"`
+	ParentID       string `json:"parent_id"`
+	Description    string `json:"description,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
 func NormalizeNamespace(input string) (string, error) {

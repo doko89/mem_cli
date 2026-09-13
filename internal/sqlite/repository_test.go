@@ -103,7 +103,7 @@ func TestMemoryCRUDAndFTSUpdate(t *testing.T) {
 	if err := service.ForgetMemory(ctx, memory.ID); err != nil {
 		t.Fatalf("forget memory: %v", err)
 	}
-	if _, err := service.GetMemory(ctx, memory.ID); getErrorCode(err) != domain.ErrorMemoryNotFound {
+	if _, err := service.GetMemory(ctx, memory.ID, false); getErrorCode(err) != domain.ErrorMemoryNotFound {
 		t.Fatalf("expected memory not found, got %#v", err)
 	}
 }
@@ -119,8 +119,11 @@ func TestExpiredMemoriesAreHiddenFromNormalRetrieval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add expired memory: %v", err)
 	}
-	if _, err := service.GetMemory(ctx, memory.ID); err != nil {
-		t.Fatalf("expired memory should remain gettable: %v", err)
+	if _, err := service.GetMemory(ctx, memory.ID, false); getErrorCode(err) != domain.ErrorMemoryNotFound {
+		t.Fatalf("expired memory should be hidden from normal get, got %#v", err)
+	}
+	if _, err := service.GetMemory(ctx, memory.ID, true); err != nil {
+		t.Fatalf("expired memory should remain available for audit: %v", err)
 	}
 	list, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "work/infra"})
 	if err != nil || len(list) != 0 {
@@ -174,6 +177,20 @@ func TestHierarchicalNamespaceQueriesIncludeSubtree(t *testing.T) {
 	}
 	if len(search) != 1 || search[0].ID != childMemory.ID {
 		t.Fatalf("expected child search hit, got %#v", search)
+	}
+	strict, err := service.SearchMemories(ctx, app.SearchFilter{Query: "xendit coverage", NamespaceID: "proj/kriskris", Subtree: true, MatchMode: "all"})
+	if err != nil {
+		t.Fatalf("strict search: %v", err)
+	}
+	if len(strict) != 0 {
+		t.Fatalf("expected strict natural-language query to miss, got %#v", strict)
+	}
+	relaxed, err := service.SearchMemories(ctx, app.SearchFilter{Query: "bagaimana coverage?", NamespaceID: "proj/kriskris", Subtree: true, MatchMode: "any"})
+	if err != nil {
+		t.Fatalf("relaxed search: %v", err)
+	}
+	if len(relaxed) != 1 || relaxed[0].ID != childMemory.ID {
+		t.Fatalf("expected relaxed query to find child hit, got %#v", relaxed)
 	}
 
 	export, err := service.ExportMemories(ctx, "proj/kriskris", true)

@@ -57,8 +57,8 @@ func (r *Memories) Create(ctx context.Context, memory domain.Memory) (domain.Mem
 	return r.repository.createMemory(ctx, memory)
 }
 
-func (r *Memories) Get(ctx context.Context, id string) (domain.Memory, error) {
-	return r.repository.getMemory(ctx, id)
+func (r *Memories) Get(ctx context.Context, id string, includeExpired bool) (domain.Memory, error) {
+	return r.repository.getMemory(ctx, id, includeExpired)
 }
 
 func (r *Memories) Update(ctx context.Context, memory domain.Memory) (domain.Memory, error) {
@@ -385,8 +385,14 @@ func (r *Repository) createMemory(ctx context.Context, memory domain.Memory) (do
 	return memory, nil
 }
 
-func (r *Repository) getMemory(ctx context.Context, id string) (domain.Memory, error) {
-	row := r.db.QueryRowContext(ctx, memorySelect()+` WHERE m.id = ?`, id)
+func (r *Repository) getMemory(ctx context.Context, id string, includeExpired bool) (domain.Memory, error) {
+	query := memorySelect() + ` WHERE m.id = ?`
+	args := []any{id}
+	if !includeExpired {
+		query += ` AND (m.expires_at IS NULL OR m.expires_at >= ?)`
+		args = append(args, timeNow())
+	}
+	row := r.db.QueryRowContext(ctx, query, args...)
 	memory, err := scanMemory(row)
 	if err == sql.ErrNoRows {
 		return domain.Memory{}, domain.NewMemoryNotFoundError(id)
@@ -463,7 +469,7 @@ func (r *Repository) listMemories(ctx context.Context, filter app.MemoryFilter) 
 }
 
 func (r *Repository) searchMemories(ctx context.Context, filter app.SearchFilter) ([]domain.SearchResult, error) {
-	ftsQuery, err := buildFTSQuery(filter.Query)
+	ftsQuery, err := buildFTSQuery(filter.Query, filter.MatchMode)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +719,7 @@ func namespaceScopeArgs(namespace string, subtree bool) []any {
 
 var ftsSeparators = regexp.MustCompile(`[^\p{L}\p{N}_]+`)
 
-func buildFTSQuery(query string) (string, error) {
+func buildFTSQuery(query string, matchMode string) (string, error) {
 	tokens := ftsSeparators.Split(strings.TrimSpace(query), -1)
 	parts := make([]string, 0, len(tokens))
 	for _, token := range tokens {
@@ -725,6 +731,9 @@ func buildFTSQuery(query string) (string, error) {
 	}
 	if len(parts) == 0 {
 		return "", domain.NewInvalidArgumentError("query must contain searchable text")
+	}
+	if matchMode == "any" {
+		return strings.Join(parts, " OR "), nil
 	}
 	return strings.Join(parts, " AND "), nil
 }

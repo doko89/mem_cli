@@ -22,7 +22,7 @@ type NamespaceRepository interface {
 
 type MemoryRepository interface {
 	Create(ctx context.Context, memory domain.Memory) (domain.Memory, error)
-	Get(ctx context.Context, id string) (domain.Memory, error)
+	Get(ctx context.Context, id string, includeExpired bool) (domain.Memory, error)
 	Update(ctx context.Context, memory domain.Memory) (domain.Memory, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context, filter MemoryFilter) ([]domain.Memory, error)
@@ -73,6 +73,7 @@ type SearchFilter struct {
 	Type        domain.MemoryType
 	Tag         string
 	Subtree     bool
+	MatchMode   string
 	Limit       int
 }
 
@@ -158,8 +159,11 @@ func (s *Service) AddMemory(ctx context.Context, input AddInput) (domain.Memory,
 	return s.memories.Create(ctx, memory)
 }
 
-func (s *Service) GetMemory(ctx context.Context, id string) (domain.Memory, error) {
-	return s.memories.Get(ctx, id)
+func (s *Service) GetMemory(ctx context.Context, id string, includeExpired bool) (domain.Memory, error) {
+	if strings.TrimSpace(id) == "" {
+		return domain.Memory{}, domain.NewMemoryNotFoundError(id)
+	}
+	return s.memories.Get(ctx, id, includeExpired)
 }
 
 func (s *Service) ListMemories(ctx context.Context, filter MemoryFilter) ([]domain.Memory, error) {
@@ -193,6 +197,12 @@ func (s *Service) SearchMemories(ctx context.Context, filter SearchFilter) ([]do
 	if filter.Limit > 1000 {
 		filter.Limit = 1000
 	}
+	if filter.MatchMode == "" {
+		filter.MatchMode = "all"
+	}
+	if filter.MatchMode != "all" && filter.MatchMode != "any" {
+		return nil, domain.NewInvalidArgumentError("match mode must be all or any")
+	}
 	namespace, err := s.namespaces.Get(ctx, filter.NamespaceID)
 	if err != nil {
 		return nil, err
@@ -202,7 +212,7 @@ func (s *Service) SearchMemories(ctx context.Context, filter SearchFilter) ([]do
 }
 
 func (s *Service) UpdateMemory(ctx context.Context, input UpdateInput) (domain.Memory, error) {
-	memory, err := s.memories.Get(ctx, input.ID)
+	memory, err := s.memories.Get(ctx, input.ID, false)
 	if err != nil {
 		return domain.Memory{}, err
 	}

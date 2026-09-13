@@ -48,27 +48,29 @@ func (e *printedError) Error() string {
 }
 
 type options struct {
-	databasePath string
-	pretty       bool
-	recursive    bool
-	namespace    string
-	subject      string
-	memoryType   string
-	content      string
-	reason       string
-	tags         []string
-	source       string
-	expiresAt    string
-	metadataJSON string
-	query        string
-	tag          string
-	limit        int
-	format       string
-	targetMemory string
-	arguments    []string
-	changed      map[string]bool
-	clearExpiry  bool
-	subtree      bool
+	databasePath   string
+	pretty         bool
+	recursive      bool
+	namespace      string
+	subject        string
+	memoryType     string
+	content        string
+	reason         string
+	tags           []string
+	source         string
+	expiresAt      string
+	metadataJSON   string
+	query          string
+	tag            string
+	limit          int
+	format         string
+	targetMemory   string
+	arguments      []string
+	changed        map[string]bool
+	clearExpiry    bool
+	subtree        bool
+	matchMode      string
+	includeExpired bool
 }
 
 var currentCommand string
@@ -214,14 +216,16 @@ func addCommand(options *options) *cobra.Command {
 }
 
 func getCommand(options *options) *cobra.Command {
-	return &cobra.Command{
+	command := &cobra.Command{
 		Use:   "get <memory-id>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Get a full memory",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			return service.GetMemory(ctx, options.args()[0])
+			return service.GetMemory(ctx, options.args()[0], options.includeExpired)
 		}),
 	}
+	command.Flags().BoolVar(&options.includeExpired, "include-expired", false, "include an expired memory when accessed by ID")
+	return command
 }
 
 func listCommand(options *options) *cobra.Command {
@@ -255,7 +259,7 @@ func searchCommand(options *options) *cobra.Command {
 		Use:   "search",
 		Short: "Search memories with FTS5",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			results, err := service.SearchMemories(ctx, searchFilter(options))
+			results, err := service.SearchMemories(ctx, searchFilter(options, "all"))
 			if err != nil {
 				return nil, err
 			}
@@ -264,6 +268,7 @@ func searchCommand(options *options) *cobra.Command {
 	}
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.query, "query", "", "full-text query")
+	command.Flags().StringVar(&options.matchMode, "match", "all", "term matching: all or any")
 	addFilterFlags(command, options)
 	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of results")
@@ -346,7 +351,7 @@ func contextCommand(options *options) *cobra.Command {
 		Use:   "context",
 		Short: "Retrieve compact agent context",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			results, err := service.SearchMemories(ctx, searchFilter(options))
+			results, err := service.SearchMemories(ctx, searchFilter(options, "any"))
 			if err != nil {
 				return nil, err
 			}
@@ -355,6 +360,7 @@ func contextCommand(options *options) *cobra.Command {
 	}
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.query, "query", "", "natural-language or keyword query")
+	command.Flags().StringVar(&options.matchMode, "match", "any", "term matching: all or any")
 	addFilterFlags(command, options)
 	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of context items")
@@ -459,7 +465,7 @@ func renderMarkdown(namespace string, memories []domain.Memory) markdownOutput {
 	return markdownOutput(builder.String())
 }
 
-func searchFilter(options *options) app.SearchFilter {
+func searchFilter(options *options, matchMode string) app.SearchFilter {
 	return app.SearchFilter{
 		Query:       options.query,
 		NamespaceID: options.namespace,
@@ -467,6 +473,7 @@ func searchFilter(options *options) app.SearchFilter {
 		Type:        domain.MemoryType(options.memoryType),
 		Tag:         options.tag,
 		Subtree:     options.subtree,
+		MatchMode:   matchMode,
 		Limit:       options.limit,
 	}
 }
