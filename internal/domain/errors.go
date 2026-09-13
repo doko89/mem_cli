@@ -1,0 +1,69 @@
+package domain
+
+import "fmt"
+
+const (
+	ErrorInvalidArgument            = "INVALID_ARGUMENT"
+	ErrorInvalidNamespace           = "INVALID_NAMESPACE"
+	ErrorNamespaceNotFound          = "NAMESPACE_NOT_FOUND"
+	ErrorNamespaceConflict          = "NAMESPACE_CONFLICT"
+	ErrorPossibleDuplicateNamespace = "POSSIBLE_DUPLICATE_NAMESPACE"
+	ErrorMemoryNotFound             = "MEMORY_NOT_FOUND"
+	ErrorInvalidMemoryType          = "INVALID_MEMORY_TYPE"
+	ErrorDatabase                   = "DATABASE_ERROR"
+	ErrorImport                     = "IMPORT_ERROR"
+)
+
+type Error struct {
+	Code       string
+	Message    string
+	Candidates []string
+	Err        error
+}
+
+func (e *Error) Error() string {
+	if e.Err != nil {
+		return e.Message + ": " + e.Err.Error()
+	}
+	return e.Message
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
+func NewInvalidArgumentError(message string) *Error {
+	return &Error{Code: ErrorInvalidArgument, Message: message}
+}
+
+func NewInvalidNamespaceError(input string) *Error {
+	return &Error{Code: ErrorInvalidNamespace, Message: fmt.Sprintf("Namespace %q is invalid.", input)}
+}
+
+func NewNamespaceNotFoundError(target string) *Error {
+	return &Error{Code: ErrorNamespaceNotFound, Message: fmt.Sprintf("Namespace %q does not exist.", target)}
+}
+
+func NewNamespaceConflictError(message string) *Error {
+	return &Error{Code: ErrorNamespaceConflict, Message: message}
+}
+
+func NewPossibleDuplicateNamespaceError(candidates []string) *Error {
+	return &Error{
+		Code:       ErrorPossibleDuplicateNamespace,
+		Message:    "A similar namespace already exists.",
+		Candidates: candidates,
+	}
+}
+
+func NewMemoryNotFoundError(id string) *Error {
+	return &Error{Code: ErrorMemoryNotFound, Message: fmt.Sprintf("Memory %q does not exist.", id)}
+}
+
+func NewInvalidMemoryTypeError(input string) *Error {
+	return &Error{Code: ErrorInvalidMemoryType, Message: fmt.Sprintf("Memory type %q is invalid.", input)}
+}
+
+func NewImportError(message string, err error) *Error {
+	return &Error{Code: ErrorImport, Message: message, Err: err}
+}
