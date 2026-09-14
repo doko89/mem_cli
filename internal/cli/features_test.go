@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"mem_cli/internal/cli"
+	"mem_cli/internal/domain"
 )
 
 func runCommand(t *testing.T, arguments ...string) (map[string]any, int) {
@@ -61,7 +62,7 @@ func TestDocumentFileContentImportAndDocFilter(t *testing.T) {
 		t.Fatalf("content was not byte-identical: got %#v want %q", retrieved["content"], content)
 	}
 
-	response, exitCode = runCommand(t, "--db", database, "import", document, "--db", database, "--namespace", "work/infra")
+	response, exitCode = runCommand(t, "--db", database, "import", document, "--db", database, "--namespace", "work/infra", "--related", "manual")
 	if exitCode != 0 {
 		t.Fatalf("import exit code: %d response=%#v", exitCode, response)
 	}
@@ -75,6 +76,10 @@ func TestDocumentFileContentImportAndDocFilter(t *testing.T) {
 	}
 	if imported["content"] != content {
 		t.Fatalf("imported content changed: %#v", imported["content"])
+	}
+	relatedOut, _ := imported["related_out"].([]any)
+	if len(relatedOut) != 1 {
+		t.Fatalf("import response related_out: %#v", imported)
 	}
 
 	response, _ = runCommand(t, "--db", database, "list", "--namespace", "work/infra")
@@ -169,5 +174,37 @@ func TestRevertAcceptsRequiredVersionFlag(t *testing.T) {
 	versions, _ := history["versions"].([]any)
 	if len(versions) != 2 {
 		t.Fatalf("expected revert to add a version, got %#v", versions)
+	}
+}
+
+func TestAmbiguousRelatedSubjectReturnsCandidates(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "mem.db")
+	response, exitCode := runCommand(t, "--db", database, "ns", "create", "work/infra")
+	if exitCode != 0 {
+		t.Fatalf("namespace exit code: %d response=%#v", exitCode, response)
+	}
+	for _, content := range []string{"one", "two"} {
+		response, exitCode = runCommand(t, "--db", database, "add", "--namespace", "work/infra", "--subject", "duplicate", "--content", content)
+		if exitCode != 0 {
+			t.Fatalf("duplicate add exit code: %d response=%#v", exitCode, response)
+		}
+	}
+	var output bytes.Buffer
+	exitCode = cli.Run([]string{"--db", database, "add", "--namespace", "work/infra", "--subject", "source", "--content", "source", "--related", "duplicate"}, &output, &output)
+	if exitCode != 2 {
+		t.Fatalf("ambiguous subject exit code: %d output=%s", exitCode, output.String())
+	}
+	var ambiguousResponse struct {
+		OK    bool `json:"ok"`
+		Error struct {
+			Code     string                    `json:"code"`
+			Subjects []domain.SubjectCandidate `json:"subjects"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &ambiguousResponse); err != nil {
+		t.Fatalf("decode ambiguous response: %v", err)
+	}
+	if ambiguousResponse.OK || ambiguousResponse.Error.Code != "AMBIGUOUS_SUBJECT" || len(ambiguousResponse.Error.Subjects) != 2 {
+		t.Fatalf("ambiguous subject response: %s", output.String())
 	}
 }

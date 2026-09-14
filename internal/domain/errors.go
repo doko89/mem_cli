@@ -10,16 +10,18 @@ const (
 	ErrorPossibleDuplicateNamespace = "POSSIBLE_DUPLICATE_NAMESPACE"
 	ErrorMemoryNotFound             = "MEMORY_NOT_FOUND"
 	ErrorAmbiguousID                = "AMBIGUOUS_ID"
+	ErrorAmbiguousSubject           = "AMBIGUOUS_SUBJECT"
 	ErrorInvalidMemoryType          = "INVALID_MEMORY_TYPE"
 	ErrorDatabase                   = "DATABASE_ERROR"
 	ErrorImport                     = "IMPORT_ERROR"
 )
 
 type Error struct {
-	Code       string
-	Message    string
-	Candidates []string
-	Err        error
+	Code              string
+	Message           string
+	Candidates        []string
+	SubjectCandidates []SubjectCandidate
+	Err               error
 }
 
 func (e *Error) Error() string {
@@ -65,6 +67,14 @@ func NewAmbiguousIDError(id string) *Error {
 	return &Error{
 		Code:    ErrorAmbiguousID,
 		Message: fmt.Sprintf("Memory id prefix %q matches multiple memories.", id),
+	}
+}
+
+func NewAmbiguousSubjectError(subject string, candidates []SubjectCandidate) *Error {
+	return &Error{
+		Code:              ErrorAmbiguousSubject,
+		Message:           fmt.Sprintf("Related memory subject %q matches multiple memories.", subject),
+		SubjectCandidates: candidates,
 	}
 }
 

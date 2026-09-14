@@ -30,9 +30,10 @@ type Response struct {
 }
 
 type ResponseError struct {
-	Code       string   `json:"code"`
-	Message    string   `json:"message"`
-	Candidates []string `json:"candidates,omitempty"`
+	Code       string                    `json:"code"`
+	Message    string                    `json:"message"`
+	Candidates []string                  `json:"candidates,omitempty"`
+	Subjects   []domain.SubjectCandidate `json:"subjects,omitempty"`
 }
 
 type ResponseMeta struct {
@@ -249,7 +250,6 @@ func getCommand(options *options) *cobra.Command {
 		}),
 	}
 	command.Flags().BoolVar(&options.includeExpired, "include-expired", false, "include an expired memory when accessed by ID")
-	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-related memory ids")
 	return command
 }
 
@@ -372,7 +372,7 @@ func updateCommand(options *options) *cobra.Command {
 	command.Flags().StringVar(&options.memoryType, "type", "", "memory type")
 	command.Flags().StringVar(&options.content, "content", "", "memory content")
 	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
-	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids")
+	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
 	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related ids")
 	command.Flags().StringVar(&options.reason, "reason", "", "memory reason")
 	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
@@ -473,12 +473,21 @@ func importCommand(options *options) *cobra.Command {
 			if options.changed["type"] {
 				memoryType = options.memoryType
 			}
-			return service.ImportFile(ctx, options.args()[0], options.namespace, options.subject, memoryType, options.tags, metadata, options.expiresAt)
+			memory, err := service.ImportFile(ctx, options.args()[0], options.namespace, options.subject, memoryType, options.tags, metadata, options.expiresAt, options.related, options.relation)
+			if err != nil {
+				return nil, err
+			}
+			if len(options.related) > 0 {
+				return service.GetMemory(ctx, memory.ID, false)
+			}
+			return memory, nil
 		}),
 	}
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
 	command.Flags().StringVar(&options.memoryType, "type", "doc", "memory type")
+	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
+	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related memories")
 	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
 	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
 	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
@@ -588,7 +597,7 @@ func addMemoryFlags(command *cobra.Command, options *options) {
 	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
 	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
 	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
-	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids")
+	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
 	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related ids")
 	_ = command.MarkFlagRequired("namespace")
 	_ = command.MarkFlagRequired("subject")
@@ -679,7 +688,7 @@ func printError(output io.Writer, pretty bool, err error) {
 	if !errors.As(err, &domainError) {
 		domainError = &domain.Error{Code: domain.ErrorInvalidArgument, Message: err.Error()}
 	}
-	response := Response{OK: false, Error: &ResponseError{Code: domainError.Code, Message: domainError.Message, Candidates: domainError.Candidates}, Meta: ResponseMeta{SchemaVersion: schemaVersion}}
+	response := Response{OK: false, Error: &ResponseError{Code: domainError.Code, Message: domainError.Message, Candidates: domainError.Candidates, Subjects: domainError.SubjectCandidates}, Meta: ResponseMeta{SchemaVersion: schemaVersion}}
 	_ = printResponse(output, pretty, currentCommand, response)
 }
 
@@ -700,7 +709,7 @@ func exitCodeForError(err error) int {
 	switch {
 	case errors.As(err, &domainError):
 		switch domainError.Code {
-		case domain.ErrorInvalidArgument, domain.ErrorInvalidNamespace, domain.ErrorInvalidMemoryType, domain.ErrorImport, domain.ErrorAmbiguousID:
+		case domain.ErrorInvalidArgument, domain.ErrorInvalidNamespace, domain.ErrorInvalidMemoryType, domain.ErrorImport, domain.ErrorAmbiguousID, domain.ErrorAmbiguousSubject:
 			return 2
 		case domain.ErrorNamespaceNotFound, domain.ErrorMemoryNotFound:
 			return 3

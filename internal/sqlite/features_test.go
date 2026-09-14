@@ -121,6 +121,64 @@ func TestMemoryVersionHistoryAndRevert(t *testing.T) {
 	}
 }
 
+func TestRelatedTargetsResolveBySubjectWithIDPriority(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	if _, _, err := service.CreateNamespace(ctx, "work/infra"); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	base := addTestMemory(t, service, "base", "base target", app.AddInput{})
+	addTestMemory(t, service, base.ID, "subject with an id as its name", app.AddInput{})
+	addTestMemory(t, service, base.ID[:8], "subject with an id prefix as its name", app.AddInput{})
+	unique := addTestMemory(t, service, "unique-target", "unique target", app.AddInput{})
+
+	source := addTestMemory(t, service, "by-subject", "by unique subject", app.AddInput{RelatedIDs: []string{"unique-target"}})
+	details, err := service.GetMemory(ctx, source.ID, false)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != unique.ID {
+		t.Fatalf("subject resolution: details=%#v err=%v", details, err)
+	}
+
+	source = addTestMemory(t, service, "by-id", "exact id wins over subject", app.AddInput{RelatedIDs: []string{base.ID}})
+	details, err = service.GetMemory(ctx, source.ID, false)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != base.ID {
+		t.Fatalf("exact id priority: details=%#v err=%v", details, err)
+	}
+
+	source = addTestMemory(t, service, "by-prefix", "unique prefix wins over subject", app.AddInput{RelatedIDs: []string{base.ID[:8]}})
+	details, err = service.GetMemory(ctx, source.ID, false)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != base.ID {
+		t.Fatalf("prefix id priority: details=%#v err=%v", details, err)
+	}
+
+	updateSource := addTestMemory(t, service, "before-update", "before subject resolution", app.AddInput{})
+	updated, err := service.UpdateMemory(ctx, app.UpdateInput{ID: updateSource.ID, RelatedIDs: []string{"unique-target"}, RelatedSet: true})
+	if err != nil {
+		t.Fatalf("update by subject: %v", err)
+	}
+	details, err = service.GetMemory(ctx, updated.ID, false)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != unique.ID {
+		t.Fatalf("update subject resolution: details=%#v err=%v", details, err)
+	}
+
+	addTestMemory(t, service, "duplicate", "duplicate one", app.AddInput{})
+	addTestMemory(t, service, "duplicate", "duplicate two", app.AddInput{})
+	_, err = service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "ambiguous-source", Type: "fact", Content: "ambiguous source", RelatedIDs: []string{"duplicate"}})
+	var domainError *domain.Error
+	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorAmbiguousSubject || len(domainError.SubjectCandidates) != 2 {
+		t.Fatalf("ambiguous subject: err=%#v", err)
+	}
+	for _, candidate := range domainError.SubjectCandidates {
+		if candidate.Namespace != "work/infra" || candidate.Subject != "duplicate" || candidate.ID == "" {
+			t.Fatalf("ambiguous subject candidate: %#v", candidate)
+		}
+	}
+
+	_, err = service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "missing-source", Type: "fact", Content: "missing source", RelatedIDs: []string{"missing"}})
+	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidArgument {
+		t.Fatalf("missing related subject: err=%#v", err)
+	}
+}
+
 func TestSchemaVersionOneMigratesWithBackupAndPreservesData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mem.db")
 	repository, err := sqlite.Open(path)

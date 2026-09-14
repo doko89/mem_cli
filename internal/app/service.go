@@ -31,6 +31,7 @@ type MemoryRepository interface {
 	ResolveID(ctx context.Context, target string) (string, error)
 	GetDetails(ctx context.Context, id string, includeExpired bool) (domain.MemoryDetails, error)
 	ReplaceLinks(ctx context.Context, fromID string, targetIDs []string, relation string) ([]domain.MemoryLink, error)
+	SubjectCandidates(ctx context.Context, subject, namespaceID string) ([]domain.SubjectCandidate, error)
 	History(ctx context.Context, id string) ([]domain.MemoryVersionSummary, error)
 	Version(ctx context.Context, id string, version int64) (domain.MemoryVersionSnapshot, error)
 }
@@ -156,7 +157,7 @@ func (s *Service) AddMemory(ctx context.Context, input AddInput) (domain.Memory,
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
 	source := sourceMap(input.Source)
-	relatedIDs, err := s.resolveMemoryIDs(ctx, input.RelatedIDs)
+	relatedIDs, err := s.resolveMemoryIDs(ctx, input.RelatedIDs, namespace.ID)
 	if err != nil {
 		return domain.Memory{}, err
 	}
@@ -251,7 +252,7 @@ func (s *Service) UpdateMemory(ctx context.Context, input UpdateInput) (domain.M
 	}
 	var relatedIDs []string
 	if input.RelatedSet {
-		relatedIDs, err = s.resolveMemoryIDs(ctx, input.RelatedIDs)
+		relatedIDs, err = s.resolveMemoryIDs(ctx, input.RelatedIDs, memory.NamespaceID)
 		if err != nil {
 			return domain.Memory{}, err
 		}
@@ -372,7 +373,7 @@ func (s *Service) RevertMemory(ctx context.Context, id string, version int64) (d
 	return updated, nil
 }
 
-func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memoryType string, tags []string, metadata map[string]any, expiresAt string) (domain.Memory, error) {
+func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memoryType string, tags []string, metadata map[string]any, expiresAt string, relatedIDs []string, relation string) (domain.Memory, error) {
 	if strings.TrimSpace(path) == "" {
 		return domain.Memory{}, domain.NewImportError("file path is required", nil)
 	}
@@ -397,18 +398,20 @@ func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memo
 		}
 	}
 	return s.AddMemory(ctx, AddInput{
-		Namespace: namespace,
-		Subject:   subject,
-		Type:      memoryType,
-		Content:   string(content),
-		Tags:      tags,
-		Metadata:  metadata,
-		ExpiresAt: expiresAt,
-		Source:    path,
+		Namespace:  namespace,
+		Subject:    subject,
+		Type:       memoryType,
+		Content:    string(content),
+		Tags:       tags,
+		Metadata:   metadata,
+		ExpiresAt:  expiresAt,
+		Source:     path,
+		RelatedIDs: relatedIDs,
+		Relation:   relation,
 	})
 }
 
-func (s *Service) resolveMemoryIDs(ctx context.Context, targets []string) ([]string, error) {
+func (s *Service) resolveMemoryIDs(ctx context.Context, targets []string, namespaceID string) ([]string, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
@@ -419,9 +422,21 @@ func (s *Service) resolveMemoryIDs(ctx context.Context, targets []string) ([]str
 		if err != nil {
 			var domainError *domain.Error
 			if errors.As(err, &domainError) && domainError.Code == domain.ErrorMemoryNotFound {
-				return nil, domain.NewRelatedMemoryNotFoundError(target)
+				candidates, subjectErr := s.memories.SubjectCandidates(ctx, strings.TrimSpace(target), namespaceID)
+				if subjectErr != nil {
+					return nil, subjectErr
+				}
+				switch len(candidates) {
+				case 1:
+					id = candidates[0].ID
+				case 0:
+					return nil, domain.NewRelatedMemoryNotFoundError(target)
+				default:
+					return nil, domain.NewAmbiguousSubjectError(target, candidates)
+				}
+			} else {
+				return nil, err
 			}
-			return nil, err
 		}
 		if _, exists := seen[id]; exists {
 			continue

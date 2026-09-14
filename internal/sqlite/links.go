@@ -49,6 +49,37 @@ func (r *Repository) resolveMemoryID(ctx context.Context, target string) (string
 	}
 }
 
+func (r *Memories) SubjectCandidates(ctx context.Context, subject, namespaceID string) ([]domain.SubjectCandidate, error) {
+	return r.repository.subjectCandidates(ctx, subject, namespaceID)
+}
+
+func (r *Repository) subjectCandidates(ctx context.Context, subject, namespaceID string) ([]domain.SubjectCandidate, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT m.id, n.normalized_name, m.subject
+		FROM memories m
+		JOIN namespaces n ON n.id = m.namespace_id
+		WHERE m.subject = ? AND m.namespace_id = ?
+		ORDER BY m.created_at, m.id`,
+		subject, namespaceID,
+	)
+	if err != nil {
+		return nil, wrapDatabase("unable to resolve memory subject", err)
+	}
+	defer rows.Close()
+	candidates := []domain.SubjectCandidate{}
+	for rows.Next() {
+		var candidate domain.SubjectCandidate
+		if err := rows.Scan(&candidate.ID, &candidate.Namespace, &candidate.Subject); err != nil {
+			return nil, wrapDatabase("unable to scan memory subject candidate", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapDatabase("unable to complete memory subject scan", err)
+	}
+	return candidates, nil
+}
+
 func likePattern(prefix string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return replacer.Replace(prefix) + `%`

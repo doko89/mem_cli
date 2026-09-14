@@ -69,6 +69,12 @@ type MemorySummary struct {
 	ExpiresAt   string         `json:"expires_at"`
 }
 
+type SubjectCandidate struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	Subject   string `json:"subject"`
+}
+
 type MemoryVersion struct {
 	Seq       int64  `json:"seq"`
 	MemoryID  string `json:"memory_id"`
