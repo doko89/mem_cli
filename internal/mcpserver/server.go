@@ -316,6 +316,24 @@ func registerTools(server *mcp.Server, databasePath string) {
 			return nil, nil, toolError(err)
 		}
 		defer done()
+		// Merge semantics: when the client sends `metadata` without
+		// `metadata_set`, merge the new keys into the existing metadata
+		// (matching the tool schema description "merge metadata").
+		if in.Metadata != nil && !in.MetadataSet {
+			existing, err := service.GetMemory(ctx, in.ID, false)
+			if err != nil {
+				return nil, nil, toolError(err)
+			}
+			merged := make(map[string]any, len(existing.Metadata)+len(in.Metadata))
+			for k, v := range existing.Metadata {
+				merged[k] = v
+			}
+			for k, v := range in.Metadata {
+				merged[k] = v
+			}
+			in.Metadata = merged
+			in.MetadataSet = true
+		}
 		input := app.UpdateInput{
 			ID:          in.ID,
 			Subject:     optionalString(in.Subject),

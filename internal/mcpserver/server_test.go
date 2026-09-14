@@ -128,6 +128,51 @@ func TestMCPContractWithCLI(t *testing.T) {
 	}
 }
 
+func TestMCPMetadataMerge(t *testing.T) {
+	session := newSession(t)
+
+	mustText(t, callTool(t, session, "memory_add", map[string]any{
+		"namespace": "test/merge",
+		"subject":   "merge check",
+		"content":   "entry for metadata merge regression",
+		"metadata":  map[string]any{"alpha": "1", "beta": "2"},
+	}))
+	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
+		"namespace": "test/merge",
+		"query":     "merge regression",
+	}))
+	var payload struct {
+		Memories []struct {
+			ID string `json:"id"`
+		} `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
+		t.Fatalf("bad search payload: %s err=%v", search, err)
+	}
+	id := payload.Memories[0].ID
+
+	// Merge mode (metadata without metadata_set): new key is added, old keys kept.
+	got := mustText(t, callTool(t, session, "memory_update", map[string]any{
+		"id":       id,
+		"metadata": map[string]any{"gamma": "3"},
+	}))
+	for _, key := range []string{`"alpha":"1"`, `"beta":"2"`, `"gamma":"3"`} {
+		if !contains(got, key) {
+			t.Fatalf("metadata merge lost %s in: %s", key, got)
+		}
+	}
+
+	// Replace mode (metadata_set=true) must drop keys not included.
+	got = mustText(t, callTool(t, session, "memory_update", map[string]any{
+		"id":            id,
+		"metadata":      map[string]any{"delta": "4"},
+		"metadata_set":  true,
+	}))
+	if contains(got, `"gamma":"3"`) || !contains(got, `"delta":"4"`) {
+		t.Fatalf("metadata replace mode unexpected result: %s", got)
+	}
+}
+
 func TestMCPImportInline(t *testing.T) {
 	session := newSession(t)
 
