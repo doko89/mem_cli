@@ -139,6 +139,7 @@ func NewRootCommand() (*cobra.Command, *options) {
 	root.AddCommand(contextCommand(options))
 	root.AddCommand(importCommand(options))
 	root.AddCommand(exportCommand(options))
+	root.AddCommand(serveCommand(options))
 	return root, options
 }
 
