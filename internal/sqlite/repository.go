@@ -244,17 +244,6 @@ func (r *Repository) createNamespace(ctx context.Context, path string) (domain.N
 		}
 	}()
 
-	finalPath := path
-	_, finalExists, err := findNamespaceByPath(ctx, tx, finalPath)
-	if err != nil {
-		return domain.Namespace{}, false, err
-	}
-	if !finalExists {
-		if err := rejectNamespaceTypo(ctx, tx, finalPath); err != nil {
-			return domain.Namespace{}, false, err
-		}
-	}
-
 	var parentID string
 	var finalNamespace domain.Namespace
 	created := false
@@ -292,55 +281,6 @@ func (r *Repository) createNamespace(ctx context.Context, path string) (domain.N
 	}
 	committed = true
 	return finalNamespace, created, nil
-}
-
-func rejectNamespaceTypo(ctx context.Context, tx *sql.Tx, candidate string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT normalized_name FROM namespaces`)
-	if err != nil {
-		return wrapDatabase("unable to inspect namespace candidates", err)
-	}
-	defer rows.Close()
-	candidates := make([]string, 0)
-	for rows.Next() {
-		var existing string
-		if err := rows.Scan(&existing); err != nil {
-			return wrapDatabase("unable to read namespace candidate", err)
-		}
-		if len(existing)-len(candidate) > 2 || len(candidate)-len(existing) > 2 || levenshtein(candidate, existing) > 2 {
-			continue
-		}
-		candidates = append(candidates, existing)
-	}
-	if err := rows.Err(); err != nil {
-		return wrapDatabase("unable to complete namespace candidate scan", err)
-	}
-	if len(candidates) == 0 {
-		return nil
-	}
-	return domain.NewPossibleDuplicateNamespaceError(candidates)
-}
-
-func levenshtein(left, right string) int {
-	if left == right {
-		return 0
-	}
-	previous := make([]int, len(right)+1)
-	current := make([]int, len(right)+1)
-	for column := range previous {
-		previous[column] = column
-	}
-	for row := 1; row <= len(left); row++ {
-		current[0] = row
-		for column := 1; column <= len(right); column++ {
-			cost := 1
-			if left[row-1] == right[column-1] {
-				cost = 0
-			}
-			current[column] = min(current[column-1]+1, min(previous[column]+1, previous[column-1]+cost))
-		}
-		previous, current = current, previous
-	}
-	return previous[len(right)]
 }
 
 func (r *Repository) listNamespaces(ctx context.Context, prefix string) ([]domain.Namespace, error) {
@@ -869,14 +809,30 @@ func namespaceScopeArgs(namespace string, subtree bool) []any {
 var ftsSeparators = regexp.MustCompile(`[^\p{L}\p{N}_]+`)
 
 func buildFTSQuery(query string, matchMode string) (string, error) {
-	tokens := ftsSeparators.Split(strings.TrimSpace(query), -1)
-	parts := make([]string, 0, len(tokens))
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
+	query = strings.TrimSpace(query)
+	parts := make([]string, 0)
+	for _, term := range strings.Fields(query) {
+		prefix := false
+		if strings.HasSuffix(term, "*") {
+			term = strings.TrimSuffix(term, "*")
+			prefix = true
 		}
-		parts = append(parts, `"`+strings.ReplaceAll(token, `"`, `""`)+`"`)
+		if strings.Contains(term, "*") {
+			return "", domain.NewInvalidArgumentError(`wildcard "*" is only supported at the end of a term`)
+		}
+		tokens := ftsSeparators.Split(term, -1)
+		for index, token := range tokens {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			tokenPrefix := ""
+			if prefix && index == len(tokens)-1 {
+				parts = append(parts, token+"*")
+				continue
+			}
+			parts = append(parts, `"`+token+`"`+tokenPrefix)
+		}
 	}
 	if len(parts) == 0 {
 		return "", domain.NewInvalidArgumentError("query must contain searchable text")

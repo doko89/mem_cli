@@ -198,6 +198,7 @@ decision
 preference
 todo
 entity
+doc
 ```
 
 Contoh:
@@ -231,6 +232,12 @@ entity
 ```
 
 Informasi mengenai entity.
+
+```text
+doc
+```
+
+Dokumen referensi, biasanya hasil import.
 
 Subject dan type tidak boleh dianggap sebagai konsep yang sama.
 
@@ -558,24 +565,7 @@ works/infra
 
 tidak dianggap sama.
 
-`mem_cli` **tidak boleh melakukan fuzzy auto-merge**.
-
-Namun CLI dapat mendeteksi kemungkinan typo dan memberikan candidate:
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "POSSIBLE_DUPLICATE_NAMESPACE",
-    "message": "A similar namespace already exists.",
-    "candidates": [
-      "work/infra"
-    ]
-  }
-}
-```
-
-Fuzzy matching hanya digunakan sebagai warning/candidate discovery.
+`mem_cli` **tidak melakukan fuzzy auto-merge dan tidak menolak namespace baru karena mirip dengan namespace lain**.
 
 Canonical identity tetap berdasarkan normalized path.
 

@@ -56,6 +56,8 @@ fact | decision | preference | todo | entity | doc
 
 `mem add` default ke `fact`. `mem import` default ke `doc` karena hasil import biasanya berupa dokumen referensi.
 
+`list`, `search`, `context`, dan `export` tidak memfilter tipe secara default, sehingga semua enam tipe ikut ditampilkan. Gunakan `--type` untuk mempersempit hasil.
+
 ## Contoh penggunaan
 
 Buat namespace:
@@ -80,6 +82,12 @@ Ambil satu memory lengkap; prefix ID unik juga didukung:
 mem get mem_c46c
 ```
 
+Secara default memory yang sudah kadaluwarsa disembunyikan. Untuk audit, akses eksplisit by ID dapat memakai:
+
+```bash
+mem get mem_c46c --include-expired
+```
+
 Cari dengan FTS5:
 
 ```bash
@@ -88,6 +96,14 @@ mem search \
   --query "control-plane nodes" \
   --limit 10
 ```
+
+FTS5 mendukung wildcard akhiran. Query berikut mencocokkan `control-plane`, `controls`, atau kata berawalan `control` lain:
+
+```bash
+mem search --namespace work/infra --query "control*"
+```
+
+Wildcard hanya valid di akhir term; penggunaan lain mengembalikan `INVALID_ARGUMENT`.
 
 Untuk konteks agent, gunakan mode pencarian longgar:
 

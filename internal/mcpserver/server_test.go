@@ -164,9 +164,9 @@ func TestMCPMetadataMerge(t *testing.T) {
 
 	// Replace mode (metadata_set=true) must drop keys not included.
 	got = mustText(t, callTool(t, session, "memory_update", map[string]any{
-		"id":            id,
-		"metadata":      map[string]any{"delta": "4"},
-		"metadata_set":  true,
+		"id":           id,
+		"metadata":     map[string]any{"delta": "4"},
+		"metadata_set": true,
 	}))
 	if contains(got, `"gamma":"3"`) || !contains(got, `"delta":"4"`) {
 		t.Fatalf("metadata replace mode unexpected result: %s", got)
@@ -276,6 +276,38 @@ func TestMCPImportInline(t *testing.T) {
 	}
 	if !contains(imported, `mcp:PRD.md`) {
 		t.Fatalf("import provenance missing: %s", imported)
+	}
+}
+
+func TestMCPSubtreeDefaultsToTrue(t *testing.T) {
+	session := newSession(t)
+
+	mustText(t, callTool(t, session, "memory_add", map[string]any{
+		"namespace": "scope/parent/child",
+		"subject":   "descendant",
+		"content":   "content stored below the parent namespace",
+	}))
+
+	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
+		"namespace": "scope/parent",
+		"query":     "descendant",
+	}))
+	if !contains(search, "scope/parent/child") {
+		t.Fatalf("search did not default to subtree: %s", search)
+	}
+
+	list := mustText(t, callTool(t, session, "memory_list", map[string]any{
+		"namespace": "scope/parent",
+	}))
+	if !contains(list, `"subject":"descendant"`) {
+		t.Fatalf("list did not default to subtree: %s", list)
+	}
+
+	export := mustText(t, callTool(t, session, "memory_export", map[string]any{
+		"namespace": "scope/parent",
+	}))
+	if !contains(export, `"subject":"descendant"`) {
+		t.Fatalf("export did not default to subtree: %s", export)
 	}
 }
 

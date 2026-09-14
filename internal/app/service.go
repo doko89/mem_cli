@@ -198,6 +198,9 @@ func (s *Service) ListMemories(ctx context.Context, filter MemoryFilter) ([]doma
 	if filter.Limit > 10000 {
 		filter.Limit = 10000
 	}
+	if _, err := domain.ValidateMemoryType(string(filter.Type)); filter.Type != "" && err != nil {
+		return nil, err
+	}
 	namespace, err := s.namespaces.Get(ctx, filter.NamespaceID)
 	if err != nil {
 		return nil, err
@@ -231,6 +234,9 @@ func (s *Service) SearchMemories(ctx context.Context, filter SearchFilter) ([]do
 	}
 	if filter.MatchMode != "all" && filter.MatchMode != "any" {
 		return nil, domain.NewInvalidArgumentError("match mode must be all or any")
+	}
+	if _, err := domain.ValidateMemoryType(string(filter.Type)); filter.Type != "" && err != nil {
+		return nil, err
 	}
 	namespace, err := s.namespaces.Get(ctx, filter.NamespaceID)
 	if err != nil {

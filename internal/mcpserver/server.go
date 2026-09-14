@@ -57,15 +57,11 @@ func errorsAs(err error, target **domain.Error) bool {
 }
 
 func validType(memoryType string) (string, error) {
-	switch strings.TrimSpace(memoryType) {
-	case "":
+	if strings.TrimSpace(memoryType) == "" {
 		return string(domain.TypeFact), nil
-	case string(domain.TypeFact), string(domain.TypeDoc), string(domain.TypeDecision),
-		string(domain.TypePreference), string(domain.TypeTodo), string(domain.TypeEntity):
-		return memoryType, nil
-	default:
-		return "", fmt.Errorf("invalid_argument: type must be one of fact, doc, decision, preference, todo, entity")
 	}
+	validated, err := domain.ValidateMemoryType(memoryType)
+	return string(validated), err
 }
 
 // --- input types -----------------------------------------------------------
@@ -85,12 +81,12 @@ type addArgs struct {
 
 type getArgs struct {
 	ID             string `json:"id" jsonschema:"memory ID (mem_...) (required)"`
-	IncludeExpired bool   `json:"include_expired,omitempty" jsonschema:"also match expired memories"`
+	IncludeExpired bool   `json:"include_expired,omitempty" jsonschema:"include an expired memory when accessed by ID (default false)"`
 }
 
 type exportArgs struct {
 	Namespace string `json:"namespace" jsonschema:"filter by namespace path"`
-	Subtree   bool   `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default false)"`
+	Subtree   *bool  `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default true)"`
 }
 
 type namespaceListArgs struct {
@@ -101,9 +97,9 @@ type searchArgs struct {
 	Namespace string `json:"namespace" jsonschema:"namespace path to search in (required)"`
 	Query     string `json:"query" jsonschema:"FTS5 query, keywords or quoted phrases (required)"`
 	Subject   string `json:"subject,omitempty" jsonschema:"filter by subject"`
-	Type      string `json:"type,omitempty" jsonschema:"filter by memory type"`
+	Type      string `json:"type,omitempty" jsonschema:"filter by memory type; empty means all types (fact, doc, decision, preference, todo, entity)"`
 	Tag       string `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Subtree   bool   `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default false)"`
+	Subtree   *bool  `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default true)"`
 	MatchMode string `json:"match_mode,omitempty" jsonschema:"term matching: all (default) or any"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 1-1000 (default 10)"`
 }
@@ -111,9 +107,9 @@ type searchArgs struct {
 type listArgs struct {
 	Namespace string `json:"namespace" jsonschema:"namespace path (required)"`
 	Subject   string `json:"subject,omitempty" jsonschema:"filter by subject"`
-	Type      string `json:"type,omitempty" jsonschema:"filter by memory type"`
+	Type      string `json:"type,omitempty" jsonschema:"filter by memory type; empty means all types (fact, doc, decision, preference, todo, entity)"`
 	Tag       string `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Subtree   bool   `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default false)"`
+	Subtree   *bool  `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default true)"`
 	RelatedTo string `json:"related_to,omitempty" jsonschema:"only memories linked to this memory id"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max memories (default 100)"`
 }
@@ -166,9 +162,9 @@ type contextArgs struct {
 	Namespace string `json:"namespace" jsonschema:"namespace path (required)"`
 	Query     string `json:"query" jsonschema:"natural-language or keyword query (required)"`
 	Subject   string `json:"subject,omitempty" jsonschema:"filter by subject"`
-	Type      string `json:"type,omitempty" jsonschema:"filter by memory type"`
+	Type      string `json:"type,omitempty" jsonschema:"filter by memory type; empty means all types (fact, doc, decision, preference, todo, entity)"`
 	Tag       string `json:"tag,omitempty" jsonschema:"filter by tag"`
-	Subtree   bool   `json:"subtree,omitempty" jsonschema:"include descendant namespaces"`
+	Subtree   *bool  `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default true)"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max context items (default 10)"`
 }
 
@@ -242,25 +238,13 @@ func registerTools(server *mcp.Server, databasePath string) {
 		return textResult(memory)
 	})
 
-	addTool(server, "memory_forget", "Remove a memory by ID. Use to delete outdated facts or sensitive data. Returns whether the memory was found and removed.", func(ctx context.Context, _ *mcp.CallToolRequest, in forgetArgs) (*mcp.CallToolResult, any, error) {
-		service, done, err := open(ctx)
-		if err != nil {
-			return nil, nil, toolError(err)
-		}
-		defer done()
-		if err := service.ForgetMemory(ctx, in.ID); err != nil {
-			return nil, nil, toolError(err)
-		}
-		return textResult(map[string]any{"ok": true, "id": in.ID, "deleted": true})
-	})
-
 	addTool(server, "memory_export", "Export visible memories as a JSON array for portability. Supports filtering by namespace and time range.", func(ctx context.Context, _ *mcp.CallToolRequest, in exportArgs) (*mcp.CallToolResult, any, error) {
 		service, done, err := open(ctx)
 		if err != nil {
 			return nil, nil, toolError(err)
 		}
 		defer done()
-		memories, err := service.ExportMemories(ctx, in.Namespace, in.Subtree)
+		memories, err := service.ExportMemories(ctx, in.Namespace, subtreeEnabled(in.Subtree))
 		if err != nil {
 			return nil, nil, toolError(err)
 		}
@@ -280,7 +264,7 @@ func registerTools(server *mcp.Server, databasePath string) {
 		return textResult(map[string]any{"count": len(namespaces), "namespaces": namespaces})
 	})
 
-	addTool(server, "memory_get", "Get one full memory by ID, including links and backlinks.", func(ctx context.Context, _ *mcp.CallToolRequest, in getArgs) (*mcp.CallToolResult, any, error) {
+	addTool(server, "memory_get", "Get one full memory by ID, including links and backlinks. Expired entries are excluded unless include_expired is true.", func(ctx context.Context, _ *mcp.CallToolRequest, in getArgs) (*mcp.CallToolResult, any, error) {
 		service, done, err := open(ctx)
 		if err != nil {
 			return nil, nil, toolError(err)
@@ -305,7 +289,7 @@ func registerTools(server *mcp.Server, databasePath string) {
 			Subject:     in.Subject,
 			Type:        domain.MemoryType(in.Type),
 			Tag:         in.Tag,
-			Subtree:     in.Subtree,
+			Subtree:     subtreeEnabled(in.Subtree),
 			MatchMode:   in.MatchMode,
 			Limit:       in.Limit,
 		})
@@ -326,7 +310,7 @@ func registerTools(server *mcp.Server, databasePath string) {
 			Subject:     in.Subject,
 			Type:        domain.MemoryType(in.Type),
 			Tag:         in.Tag,
-			Subtree:     in.Subtree,
+			Subtree:     subtreeEnabled(in.Subtree),
 			RelatedTo:   in.RelatedTo,
 			Limit:       in.Limit,
 		})
@@ -348,7 +332,7 @@ func registerTools(server *mcp.Server, databasePath string) {
 			Subject:     in.Subject,
 			Type:        domain.MemoryType(in.Type),
 			Tag:         in.Tag,
-			Subtree:     in.Subtree,
+			Subtree:     subtreeEnabled(in.Subtree),
 			MatchMode:   "any",
 			Limit:       in.Limit,
 		})
@@ -519,4 +503,8 @@ func defaultSubjectFromFilename(filename string) string {
 		return "imported"
 	}
 	return base
+}
+
+func subtreeEnabled(value *bool) bool {
+	return value == nil || *value
 }

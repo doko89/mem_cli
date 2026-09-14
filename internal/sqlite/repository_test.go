@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,19 +46,19 @@ func TestNamespaceCreateIsNormalizedAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestNamespaceTypoReturnsStableCandidates(t *testing.T) {
+func TestSimilarNamespaceCreatesWithoutFuzzyGuard(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	if _, _, err := service.CreateNamespace(ctx, "work/infra"); err != nil {
+	first, _, err := service.CreateNamespace(ctx, "work/infra")
+	if err != nil {
 		t.Fatalf("seed namespace: %v", err)
 	}
-	_, _, err := service.CreateNamespace(ctx, "works/infra")
-	var domainError *domain.Error
-	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorPossibleDuplicateNamespace {
-		t.Fatalf("expected possible duplicate error, got %#v", err)
+	second, created, err := service.CreateNamespace(ctx, "works/infra")
+	if err != nil {
+		t.Fatalf("create similar namespace: %v", err)
 	}
-	if len(domainError.Candidates) != 1 || domainError.Candidates[0] != "work/infra" {
-		t.Fatalf("unexpected candidates: %#v", domainError.Candidates)
+	if !created || first.ID == second.ID {
+		t.Fatalf("similar namespace was not separate: first=%+v second=%+v", first, second)
 	}
 }
 
@@ -105,6 +106,86 @@ func TestMemoryCRUDAndFTSUpdate(t *testing.T) {
 	}
 	if _, err := service.GetMemory(ctx, memory.ID, false); getErrorCode(err) != domain.ErrorMemoryNotFound {
 		t.Fatalf("expected memory not found, got %#v", err)
+	}
+}
+
+func TestSearchSupportsExplicitSuffixWildcardOnly(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	if _, _, err := service.CreateNamespace(ctx, "work/infra"); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	memory, err := service.AddMemory(ctx, app.AddInput{
+		Namespace: "work/infra",
+		Subject:   "topology",
+		Type:      "fact",
+		Content:   "Workers spread across availability zones.",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	results, err := service.SearchMemories(ctx, app.SearchFilter{Query: "availability*", NamespaceID: "work/infra"})
+	if err != nil || len(results) != 1 || results[0].ID != memory.ID {
+		t.Fatalf("suffix wildcard search: results=%#v err=%v", results, err)
+	}
+	results, err = service.SearchMemories(ctx, app.SearchFilter{Query: "availab*", NamespaceID: "work/infra"})
+	if err != nil || len(results) != 1 || results[0].ID != memory.ID {
+		t.Fatalf("partial prefix wildcard search: results=%#v err=%v", results, err)
+	}
+	_, err = service.SearchMemories(ctx, app.SearchFilter{Query: "availab*le", NamespaceID: "work/infra"})
+	var domainError *domain.Error
+	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidArgument || !strings.Contains(domainError.Message, `wildcard "*"`) {
+		t.Fatalf("invalid wildcard: err=%#v", err)
+	}
+}
+
+func TestInvalidTypeFilterExplainsValidChoices(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	if _, _, err := service.CreateNamespace(ctx, "work/infra"); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	_, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "work/infra", Type: "note", Limit: 10})
+	var domainError *domain.Error
+	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidMemoryType {
+		t.Fatalf("invalid list type: err=%#v", err)
+	}
+	for _, validType := range domain.ValidMemoryTypes() {
+		if !strings.Contains(domainError.Message, validType) {
+			t.Fatalf("valid type %s missing from %s", validType, domainError.Message)
+		}
+	}
+	_, err = service.SearchMemories(ctx, app.SearchFilter{NamespaceID: "work/infra", Query: "anything", Type: "note"})
+	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidMemoryType {
+		t.Fatalf("invalid search type: err=%#v", err)
+	}
+}
+
+func TestRetrievalIncludesAllTypesByDefault(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	if _, _, err := service.CreateNamespace(ctx, "work/infra"); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	for _, memoryType := range domain.ValidMemoryTypes() {
+		_, err := service.AddMemory(ctx, app.AddInput{
+			Namespace: "work/infra",
+			Subject:   "type-" + memoryType,
+			Type:      memoryType,
+			Content:   "shared retrieval content",
+		})
+		if err != nil {
+			t.Fatalf("add %s memory: %v", memoryType, err)
+		}
+	}
+
+	memories, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "work/infra"})
+	if err != nil || len(memories) != len(domain.ValidMemoryTypes()) {
+		t.Fatalf("default list retrieval: count=%d err=%v", len(memories), err)
+	}
+	results, err := service.SearchMemories(ctx, app.SearchFilter{NamespaceID: "work/infra", Query: "shared retrieval"})
+	if err != nil || len(results) != len(domain.ValidMemoryTypes()) {
+		t.Fatalf("default search retrieval: count=%d err=%v", len(results), err)
 	}
 }
 

@@ -50,6 +50,47 @@ func TestNamespaceCreateOutputsStableJSONContract(t *testing.T) {
 	}
 }
 
+func TestNamespaceGetAndListUseSnakeCaseJSON(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "mem.db")
+	createOutput, getOutput, listOutput := &bytes.Buffer{}, &bytes.Buffer{}, &bytes.Buffer{}
+	if code := cli.Run([]string{"--db", database, "ns", "create", "Work//Infra/"}, createOutput, createOutput); code != 0 {
+		t.Fatalf("namespace create exit code: %d output=%s", code, createOutput.String())
+	}
+	if code := cli.Run([]string{"--db", database, "ns", "get", "work/infra"}, getOutput, getOutput); code != 0 {
+		t.Fatalf("namespace get exit code: %d output=%s", code, getOutput.String())
+	}
+	if code := cli.Run([]string{"--db", database, "ns", "list"}, listOutput, listOutput); code != 0 {
+		t.Fatalf("namespace list exit code: %d output=%s", code, listOutput.String())
+	}
+
+	var getResponse, listResponse map[string]any
+	if err := json.Unmarshal(getOutput.Bytes(), &getResponse); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if err := json.Unmarshal(listOutput.Bytes(), &listResponse); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	getData := getResponse["data"].(map[string]any)
+	expectedKeys := []string{"id", "name", "normalized_name", "parent_id", "created_at"}
+	for _, key := range expectedKeys {
+		if _, ok := getData[key]; !ok {
+			t.Fatalf("namespace get key %q missing: %s", key, getOutput.String())
+		}
+	}
+	namespaces := listResponse["data"].(map[string]any)["namespaces"].([]any)
+	if len(namespaces) != 2 {
+		t.Fatalf("expected parent and child namespaces, got %s", listOutput.String())
+	}
+	for _, item := range namespaces {
+		namespace := item.(map[string]any)
+		for _, key := range expectedKeys {
+			if _, ok := namespace[key]; !ok {
+				t.Fatalf("namespace list key %q missing: %s", key, listOutput.String())
+			}
+		}
+	}
+}
+
 func TestInvalidArgumentOutputsJSONAndExitCode(t *testing.T) {
 	var output bytes.Buffer
 	exitCode := cli.Run([]string{"--db", filepath.Join(t.TempDir(), "mem.db"), "add", "--namespace", "work"}, &output, &output)

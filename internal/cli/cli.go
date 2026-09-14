@@ -370,7 +370,7 @@ func updateCommand(options *options) *cobra.Command {
 		}),
 	}
 	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
-	command.Flags().StringVar(&options.memoryType, "type", "", "memory type")
+	command.Flags().StringVar(&options.memoryType, "type", "", memoryTypeUsage(""))
 	command.Flags().StringVar(&options.content, "content", "", "memory content")
 	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
 	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
@@ -486,7 +486,7 @@ func importCommand(options *options) *cobra.Command {
 	}
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
-	command.Flags().StringVar(&options.memoryType, "type", "doc", "memory type")
+	command.Flags().StringVar(&options.memoryType, "type", "doc", memoryTypeUsage("doc"))
 	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
 	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related memories")
 	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
@@ -587,10 +587,18 @@ func searchFilter(options *options, matchMode string) app.SearchFilter {
 	}
 }
 
+func memoryTypeUsage(defaultValue string) string {
+	usage := "memory type: " + strings.Join(domain.ValidMemoryTypes(), ", ")
+	if defaultValue != "" {
+		usage += " (default " + defaultValue + ")"
+	}
+	return usage
+}
+
 func addMemoryFlags(command *cobra.Command, options *options) {
 	command.Flags().StringVar(&options.namespace, "namespace", "", "namespace path")
 	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
-	command.Flags().StringVar(&options.memoryType, "type", "fact", "memory type")
+	command.Flags().StringVar(&options.memoryType, "type", "fact", memoryTypeUsage("fact"))
 	command.Flags().StringVar(&options.content, "content", "", "memory content")
 	command.Flags().StringVar(&options.reason, "reason", "", "reason the memory is stored")
 	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
@@ -610,7 +618,7 @@ func addNamespaceFlag(command *cobra.Command, options *options) {
 
 func addFilterFlags(command *cobra.Command, options *options) {
 	command.Flags().StringVar(&options.subject, "subject", "", "filter by subject")
-	command.Flags().StringVar(&options.memoryType, "type", "", "filter by memory type")
+	command.Flags().StringVar(&options.memoryType, "type", "", "filter by memory type; empty includes "+strings.Join(domain.ValidMemoryTypes(), ", "))
 	command.Flags().StringVar(&options.tag, "tag", "", "filter by tag")
 }
 

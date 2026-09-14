@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	ErrorInvalidArgument            = "INVALID_ARGUMENT"
@@ -86,7 +89,10 @@ func NewRelatedMemoryNotFoundError(id, namespace string) *Error {
 }
 
 func NewInvalidMemoryTypeError(input string) *Error {
-	return &Error{Code: ErrorInvalidMemoryType, Message: fmt.Sprintf("Memory type %q is invalid.", input)}
+	return &Error{
+		Code:    ErrorInvalidMemoryType,
+		Message: fmt.Sprintf("Memory type %q is invalid; valid types are %s.", input, strings.Join(ValidMemoryTypes(), ", ")),
+	}
 }
 
 func NewImportError(message string, err error) *Error {
