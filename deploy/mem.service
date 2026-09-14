@@ -1,0 +1,13 @@
+[Unit]
+Description=mem_cli MCP server (Streamable HTTP) - Notion for agents
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/local/bin/mem serve --http 127.0.0.1:8090
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
