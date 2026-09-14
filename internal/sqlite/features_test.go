@@ -174,7 +174,7 @@ func TestRelatedTargetsResolveBySubjectWithIDPriority(t *testing.T) {
 	}
 
 	_, err = service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "missing-source", Type: "fact", Content: "missing source", RelatedIDs: []string{"missing"}})
-	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidArgument {
+	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidArgument || domainError.Message != `Related identifier "missing" not found as id or subject in namespace "work/infra".` {
 		t.Fatalf("missing related subject: err=%#v", err)
 	}
 }

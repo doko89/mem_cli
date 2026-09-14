@@ -78,10 +78,10 @@ func NewAmbiguousSubjectError(subject string, candidates []SubjectCandidate) *Er
 	}
 }
 
-func NewRelatedMemoryNotFoundError(id string) *Error {
+func NewRelatedMemoryNotFoundError(id, namespace string) *Error {
 	return &Error{
 		Code:    ErrorInvalidArgument,
-		Message: fmt.Sprintf("Related memory id %q does not exist.", id),
+		Message: fmt.Sprintf("Related identifier %q not found as id or subject in namespace %q.", id, namespace),
 	}
 }
 

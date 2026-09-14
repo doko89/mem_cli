@@ -430,7 +430,11 @@ func (s *Service) resolveMemoryIDs(ctx context.Context, targets []string, namesp
 				case 1:
 					id = candidates[0].ID
 				case 0:
-					return nil, domain.NewRelatedMemoryNotFoundError(target)
+					namespace := namespaceID
+					if resolvedNamespace, namespaceErr := s.namespaces.Get(ctx, namespaceID); namespaceErr == nil {
+						namespace = resolvedNamespace.NormalizedName
+					}
+					return nil, domain.NewRelatedMemoryNotFoundError(target, namespace)
 				default:
 					return nil, domain.NewAmbiguousSubjectError(target, candidates)
 				}
