@@ -173,6 +173,43 @@ func TestMCPMetadataMerge(t *testing.T) {
 	}
 }
 
+func TestMCPForget(t *testing.T) {
+	session := newSession(t)
+
+	mustText(t, callTool(t, session, "memory_add", map[string]any{
+		"namespace": "test/forget",
+		"subject":   "forget me",
+		"content":   "entry to be deleted via MCP",
+	}))
+	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
+		"namespace": "test/forget",
+		"query":     "deleted via MCP",
+	}))
+	var payload struct {
+		Memories []struct {
+			ID string `json:"id"`
+		} `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
+		t.Fatalf("bad search payload: %s err=%v", search, err)
+	}
+	id := payload.Memories[0].ID
+
+	got := mustText(t, callTool(t, session, "memory_forget", map[string]any{"id": id}))
+	if !contains(got, `"deleted":true`) {
+		t.Fatalf("unexpected forget result: %s", got)
+	}
+
+	result := callTool(t, session, "memory_get", map[string]any{"id": id})
+	if !result.IsError {
+		t.Fatal("expected memory_get to fail after forget")
+	}
+	text := mustAllowError(t, result)
+	if !contains(text, "NOT_FOUND") {
+		t.Fatalf("expected not-found error, got: %s", text)
+	}
+}
+
 func TestMCPImportInline(t *testing.T) {
 	session := newSession(t)
 

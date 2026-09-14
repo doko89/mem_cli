@@ -88,6 +88,15 @@ type getArgs struct {
 	IncludeExpired bool   `json:"include_expired,omitempty" jsonschema:"also match expired memories"`
 }
 
+type exportArgs struct {
+	Namespace string `json:"namespace" jsonschema:"filter by namespace path"`
+	Subtree   bool   `json:"subtree,omitempty" jsonschema:"include descendant namespaces (default false)"`
+}
+
+type namespaceListArgs struct {
+	Prefix string `json:"prefix,omitempty" jsonschema:"filter by namespace path prefix"`
+}
+
 type searchArgs struct {
 	Namespace string `json:"namespace" jsonschema:"namespace path to search in (required)"`
 	Query     string `json:"query" jsonschema:"FTS5 query, keywords or quoted phrases (required)"`
@@ -124,6 +133,10 @@ type updateArgs struct {
 	RelatedIDs     []string       `json:"related_ids,omitempty" jsonschema:"replace related memory IDs when replace_related is true"`
 	ReplaceRelated bool           `json:"replace_related,omitempty" jsonschema:"replace links with related_ids"`
 	Relation       string         `json:"relation,omitempty" jsonschema:"relation label when replacing links"`
+}
+
+type forgetArgs struct {
+	ID string `json:"id" jsonschema:"memory ID (mem_...) to delete permanently"`
 }
 
 type importArgs struct {
@@ -227,6 +240,44 @@ func registerTools(server *mcp.Server, databasePath string) {
 			return nil, nil, toolError(err)
 		}
 		return textResult(memory)
+	})
+
+	addTool(server, "memory_forget", "Remove a memory by ID. Use to delete outdated facts or sensitive data. Returns whether the memory was found and removed.", func(ctx context.Context, _ *mcp.CallToolRequest, in forgetArgs) (*mcp.CallToolResult, any, error) {
+		service, done, err := open(ctx)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		defer done()
+		if err := service.ForgetMemory(ctx, in.ID); err != nil {
+			return nil, nil, toolError(err)
+		}
+		return textResult(map[string]any{"ok": true, "id": in.ID, "deleted": true})
+	})
+
+	addTool(server, "memory_export", "Export visible memories as a JSON array for portability. Supports filtering by namespace and time range.", func(ctx context.Context, _ *mcp.CallToolRequest, in exportArgs) (*mcp.CallToolResult, any, error) {
+		service, done, err := open(ctx)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		defer done()
+		memories, err := service.ExportMemories(ctx, in.Namespace, in.Subtree)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		return textResult(map[string]any{"count": len(memories), "memories": memories})
+	})
+
+	addTool(server, "memory_namespace_list", "List namespaces, optionally filtered by a path prefix.", func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceListArgs) (*mcp.CallToolResult, any, error) {
+		service, done, err := open(ctx)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		defer done()
+		namespaces, err := service.ListNamespaces(ctx, in.Prefix)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		return textResult(map[string]any{"count": len(namespaces), "namespaces": namespaces})
 	})
 
 	addTool(server, "memory_get", "Get one full memory by ID, including links and backlinks.", func(ctx context.Context, _ *mcp.CallToolRequest, in getArgs) (*mcp.CallToolResult, any, error) {
@@ -355,6 +406,21 @@ func registerTools(server *mcp.Server, databasePath string) {
 			return nil, nil, toolError(err)
 		}
 		return textResult(memory)
+	})
+
+	addTool(server, "memory_forget", "Delete one memory permanently by ID (irreversible; versions are removed too). Prefer memory_update when you only want to change fields.", func(ctx context.Context, _ *mcp.CallToolRequest, in forgetArgs) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.ID) == "" {
+			return nil, nil, fmt.Errorf("invalid_argument: id is required")
+		}
+		service, done, err := open(ctx)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		defer done()
+		if err := service.ForgetMemory(ctx, in.ID); err != nil {
+			return nil, nil, toolError(err)
+		}
+		return textResult(map[string]any{"ok": true, "id": in.ID, "deleted": true})
 	})
 
 	addTool(server, "memory_import", "Import one document as one memory. Send the full content inline; do NOT pass a file path. The namespace is created automatically if it does not exist yet (mkdir -p semantics). The default subject is the filename without extension.", func(ctx context.Context, _ *mcp.CallToolRequest, in importArgs) (*mcp.CallToolResult, any, error) {
