@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,18 +28,25 @@ type MemoryRepository interface {
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context, filter MemoryFilter) ([]domain.Memory, error)
 	Search(ctx context.Context, filter SearchFilter) ([]domain.SearchResult, error)
+	ResolveID(ctx context.Context, target string) (string, error)
+	GetDetails(ctx context.Context, id string, includeExpired bool) (domain.MemoryDetails, error)
+	ReplaceLinks(ctx context.Context, fromID string, targetIDs []string, relation string) ([]domain.MemoryLink, error)
+	History(ctx context.Context, id string) ([]domain.MemoryVersionSummary, error)
+	Version(ctx context.Context, id string, version int64) (domain.MemoryVersionSnapshot, error)
 }
 
 type AddInput struct {
-	Namespace string
-	Subject   string
-	Type      string
-	Content   string
-	Reason    string
-	Tags      []string
-	Metadata  map[string]any
-	Source    string
-	ExpiresAt string
+	Namespace  string
+	Subject    string
+	Type       string
+	Content    string
+	Reason     string
+	Tags       []string
+	Metadata   map[string]any
+	Source     string
+	ExpiresAt  string
+	RelatedIDs []string
+	Relation   string
 }
 
 type UpdateInput struct {
@@ -52,8 +60,12 @@ type UpdateInput struct {
 	Metadata    map[string]any
 	MetadataSet bool
 	Source      *string
+	SourceData  map[string]any
 	ExpiresAt   *string
 	ClearExpiry bool
+	RelatedIDs  []string
+	RelatedSet  bool
+	Relation    string
 }
 
 type MemoryFilter struct {
@@ -63,6 +75,7 @@ type MemoryFilter struct {
 	Tag            string
 	Subtree        bool
 	IncludeExpired bool
+	RelatedTo      string
 	Limit          int
 }
 
@@ -143,6 +156,10 @@ func (s *Service) AddMemory(ctx context.Context, input AddInput) (domain.Memory,
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
 	source := sourceMap(input.Source)
+	relatedIDs, err := s.resolveMemoryIDs(ctx, input.RelatedIDs)
+	if err != nil {
+		return domain.Memory{}, err
+	}
 	memory := domain.Memory{
 		NamespaceID: namespace.ID,
 		Subject:     strings.TrimSpace(input.Subject),
@@ -156,14 +173,18 @@ func (s *Service) AddMemory(ctx context.Context, input AddInput) (domain.Memory,
 		UpdatedAt:   now,
 		ExpiresAt:   expiresAt,
 	}
-	return s.memories.Create(ctx, memory)
+	created, err := s.memories.Create(ctx, memory)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	return s.CreateMemoryLinks(ctx, created, relatedIDs, input.Relation)
 }
 
-func (s *Service) GetMemory(ctx context.Context, id string, includeExpired bool) (domain.Memory, error) {
+func (s *Service) GetMemory(ctx context.Context, id string, includeExpired bool) (domain.MemoryDetails, error) {
 	if strings.TrimSpace(id) == "" {
-		return domain.Memory{}, domain.NewMemoryNotFoundError(id)
+		return domain.MemoryDetails{}, domain.NewMemoryNotFoundError(id)
 	}
-	return s.memories.Get(ctx, id, includeExpired)
+	return s.memories.GetDetails(ctx, id, includeExpired)
 }
 
 func (s *Service) ListMemories(ctx context.Context, filter MemoryFilter) ([]domain.Memory, error) {
@@ -181,6 +202,13 @@ func (s *Service) ListMemories(ctx context.Context, filter MemoryFilter) ([]doma
 		return nil, err
 	}
 	filter.NamespaceID = namespace.NormalizedName
+	if strings.TrimSpace(filter.RelatedTo) != "" {
+		relatedTo, err := s.memories.ResolveID(ctx, filter.RelatedTo)
+		if err != nil {
+			return nil, err
+		}
+		filter.RelatedTo = relatedTo
+	}
 	return s.memories.List(ctx, filter)
 }
 
@@ -212,9 +240,21 @@ func (s *Service) SearchMemories(ctx context.Context, filter SearchFilter) ([]do
 }
 
 func (s *Service) UpdateMemory(ctx context.Context, input UpdateInput) (domain.Memory, error) {
+	resolvedID, err := s.memories.ResolveID(ctx, input.ID)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	input.ID = resolvedID
 	memory, err := s.memories.Get(ctx, input.ID, false)
 	if err != nil {
 		return domain.Memory{}, err
+	}
+	var relatedIDs []string
+	if input.RelatedSet {
+		relatedIDs, err = s.resolveMemoryIDs(ctx, input.RelatedIDs)
+		if err != nil {
+			return domain.Memory{}, err
+		}
 	}
 	if input.Subject != nil {
 		memory.Subject = strings.TrimSpace(*input.Subject)
@@ -244,6 +284,9 @@ func (s *Service) UpdateMemory(ctx context.Context, input UpdateInput) (domain.M
 	if input.Source != nil {
 		memory.Source = sourceMap(*input.Source)
 	}
+	if input.SourceData != nil {
+		memory.Source = input.SourceData
+	}
 	if input.ClearExpiry {
 		memory.ExpiresAt = ""
 	} else if input.ExpiresAt != nil {
@@ -256,23 +299,102 @@ func (s *Service) UpdateMemory(ctx context.Context, input UpdateInput) (domain.M
 		return domain.Memory{}, err
 	}
 	memory.UpdatedAt = s.now().UTC().Format(time.RFC3339Nano)
-	return s.memories.Update(ctx, memory)
+	updated, err := s.memories.Update(ctx, memory)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	if input.RelatedSet {
+		if _, err := s.memories.ReplaceLinks(ctx, updated.ID, relatedIDs, s.linkRelation(input.Relation)); err != nil {
+			return domain.Memory{}, err
+		}
+	}
+	return updated, nil
+}
+
+func (s *Service) CreateMemoryLinks(ctx context.Context, memory domain.Memory, targetIDs []string, relation string) (domain.Memory, error) {
+	_, err := s.memories.ReplaceLinks(ctx, memory.ID, targetIDs, s.linkRelation(relation))
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	return memory, nil
 }
 
 func (s *Service) ForgetMemory(ctx context.Context, id string) error {
-	return s.memories.Delete(ctx, id)
+	resolvedID, err := s.memories.ResolveID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.memories.Delete(ctx, resolvedID)
+}
+
+func (s *Service) MemoryHistory(ctx context.Context, id string) ([]domain.MemoryVersionSummary, error) {
+	resolvedID, err := s.memories.ResolveID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.memories.History(ctx, resolvedID)
+}
+
+func (s *Service) MemoryVersion(ctx context.Context, id string, version int64) (domain.MemoryVersionSnapshot, error) {
+	resolvedID, err := s.memories.ResolveID(ctx, id)
+	if err != nil {
+		return domain.MemoryVersionSnapshot{}, err
+	}
+	return s.memories.Version(ctx, resolvedID, version)
+}
+
+func (s *Service) RevertMemory(ctx context.Context, id string, version int64) (domain.Memory, error) {
+	snapshot, err := s.MemoryVersion(ctx, id, version)
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	subject := snapshot.Memory.Subject
+	memoryType := string(snapshot.Memory.Type)
+	content := snapshot.Memory.Content
+	reason := snapshot.Memory.Reason
+	expiresAt := snapshot.Memory.ExpiresAt
+	updated, err := s.UpdateMemory(ctx, UpdateInput{
+		ID:          snapshot.Memory.ID,
+		Subject:     &subject,
+		Type:        &memoryType,
+		Content:     &content,
+		Reason:      &reason,
+		Tags:        snapshot.Memory.Tags,
+		TagsSet:     true,
+		Metadata:    snapshot.Memory.Metadata,
+		MetadataSet: true,
+		SourceData:  snapshot.Memory.Source,
+		ExpiresAt:   &expiresAt,
+	})
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	return updated, nil
 }
 
 func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memoryType string, tags []string, metadata map[string]any, expiresAt string) (domain.Memory, error) {
 	if strings.TrimSpace(path) == "" {
 		return domain.Memory{}, domain.NewImportError("file path is required", nil)
 	}
-	content, err := os.ReadFile(path)
+	var content []byte
+	var err error
+	if path == "-" {
+		content, err = io.ReadAll(os.Stdin)
+	} else {
+		content, err = os.ReadFile(path)
+	}
 	if err != nil {
 		return domain.Memory{}, domain.NewImportError("unable to read imported file", err)
 	}
 	if strings.TrimSpace(memoryType) == "" {
-		memoryType = string(domain.TypeFact)
+		memoryType = string(domain.TypeDoc)
+	}
+	if strings.TrimSpace(subject) == "" {
+		if path == "-" {
+			subject = "stdin"
+		} else {
+			subject = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		}
 	}
 	return s.AddMemory(ctx, AddInput{
 		Namespace: namespace,
@@ -284,6 +406,38 @@ func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memo
 		ExpiresAt: expiresAt,
 		Source:    path,
 	})
+}
+
+func (s *Service) resolveMemoryIDs(ctx context.Context, targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	resolved := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		id, err := s.memories.ResolveID(ctx, target)
+		if err != nil {
+			var domainError *domain.Error
+			if errors.As(err, &domainError) && domainError.Code == domain.ErrorMemoryNotFound {
+				return nil, domain.NewRelatedMemoryNotFoundError(target)
+			}
+			return nil, err
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		resolved = append(resolved, id)
+	}
+	return resolved, nil
+}
+
+func (s *Service) linkRelation(relation string) string {
+	relation = strings.TrimSpace(relation)
+	if relation == "" {
+		return "related"
+	}
+	return relation
 }
 
 func (s *Service) ExportMemories(ctx context.Context, namespace string, subtree bool) ([]domain.Memory, error) {

@@ -19,7 +19,7 @@ import (
 	"mem_cli/internal/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Response struct {
 	OK      bool           `json:"ok"`
@@ -71,6 +71,11 @@ type options struct {
 	subtree        bool
 	matchMode      string
 	includeExpired bool
+	contentFile    string
+	related        []string
+	relation       string
+	relatedTo      string
+	version        int64
 }
 
 var currentCommand string
@@ -128,6 +133,8 @@ func NewRootCommand() (*cobra.Command, *options) {
 	root.AddCommand(searchCommand(options))
 	root.AddCommand(updateCommand(options))
 	root.AddCommand(forgetCommand(options))
+	root.AddCommand(historyCommand(options))
+	root.AddCommand(revertCommand(options))
 	root.AddCommand(contextCommand(options))
 	root.AddCommand(importCommand(options))
 	root.AddCommand(exportCommand(options))
@@ -198,17 +205,27 @@ func addCommand(options *options) *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
-			return service.AddMemory(ctx, app.AddInput{
-				Namespace: options.namespace,
-				Subject:   options.subject,
-				Type:      options.memoryType,
-				Content:   options.content,
-				Reason:    options.reason,
-				Tags:      options.tags,
-				Metadata:  metadata,
-				Source:    options.source,
-				ExpiresAt: options.expiresAt,
+			content, err := readContentInput(options.changed["file"], options.contentFile, options.content)
+			if err != nil {
+				return nil, err
+			}
+			memory, err := service.AddMemory(ctx, app.AddInput{
+				Namespace:  options.namespace,
+				Subject:    options.subject,
+				Type:       options.memoryType,
+				Content:    content,
+				Reason:     options.reason,
+				Tags:       options.tags,
+				Metadata:   metadata,
+				Source:     options.source,
+				ExpiresAt:  options.expiresAt,
+				RelatedIDs: options.related,
+				Relation:   options.relation,
 			})
+			if err != nil {
+				return nil, err
+			}
+			return memory, nil
 		}),
 	}
 	addMemoryFlags(command, options)
@@ -225,6 +242,7 @@ func getCommand(options *options) *cobra.Command {
 		}),
 	}
 	command.Flags().BoolVar(&options.includeExpired, "include-expired", false, "include an expired memory when accessed by ID")
+	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-related memory ids")
 	return command
 }
 
@@ -233,22 +251,28 @@ func listCommand(options *options) *cobra.Command {
 		Use:   "list",
 		Short: "List memories in a namespace",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			memories, err := service.ListMemories(ctx, app.MemoryFilter{
+			list, err := service.ListMemories(ctx, app.MemoryFilter{
 				NamespaceID: options.namespace,
 				Subject:     options.subject,
 				Type:        domain.MemoryType(options.memoryType),
 				Tag:         options.tag,
 				Subtree:     options.subtree,
+				RelatedTo:   options.relatedTo,
 				Limit:       options.limit,
 			})
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"memories": memories}, nil
+			summaries := make([]domain.MemorySummary, 0, len(list))
+			for _, memory := range list {
+				summaries = append(summaries, memorySummary(memory))
+			}
+			return map[string]any{"memories": summaries}, nil
 		}),
 	}
 	addNamespaceFlag(command, options)
 	addFilterFlags(command, options)
+	command.Flags().StringVar(&options.relatedTo, "related-to", "", "include memories connected in either direction to this memory id")
 	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
 	command.Flags().IntVar(&options.limit, "limit", 100, "maximum number of memories")
 	return command
@@ -316,12 +340,29 @@ func updateCommand(options *options) *cobra.Command {
 			if options.changed["clear-expiry"] && options.clearExpiry {
 				input.ClearExpiry = true
 			}
+			if options.changed["file"] {
+				content, err := readContentInput(true, options.contentFile, "")
+				if err != nil {
+					return nil, err
+				}
+				input.Content = &content
+			} else if options.changed["content"] {
+				input.Content = &options.content
+			}
+			if options.changed["related"] {
+				input.RelatedIDs = options.related
+				input.RelatedSet = true
+				input.Relation = options.relation
+			}
 			return service.UpdateMemory(ctx, input)
 		}),
 	}
 	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
 	command.Flags().StringVar(&options.memoryType, "type", "", "memory type")
 	command.Flags().StringVar(&options.content, "content", "", "memory content")
+	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
+	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids")
+	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related ids")
 	command.Flags().StringVar(&options.reason, "reason", "", "memory reason")
 	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
 	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
@@ -342,6 +383,42 @@ func forgetCommand(options *options) *cobra.Command {
 				return nil, err
 			}
 			return map[string]any{"id": id, "forgotten": true}, nil
+		}),
+	}
+}
+
+func historyCommand(options *options) *cobra.Command {
+	command := &cobra.Command{
+		Use:   "history <memory-id>",
+		Args:  cobra.ExactArgs(1),
+		Short: "List memory versions or show one full version",
+		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
+			id := options.args()[0]
+			if options.changed["version"] {
+				snapshot, err := service.MemoryVersion(ctx, id, options.version)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"id": id, "version": snapshot}, nil
+			}
+			versions, err := service.MemoryHistory(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"id": id, "versions": versions}, nil
+		}),
+	}
+	command.Flags().Int64Var(&options.version, "version", 0, "version number to display")
+	return command
+}
+
+func revertCommand(options *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "revert <memory-id> --version N",
+		Args:  cobra.ExactArgs(1),
+		Short: "Restore a memory from a saved version",
+		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
+			return service.RevertMemory(ctx, options.args()[0], options.version)
 		}),
 	}
 }
@@ -383,7 +460,7 @@ func importCommand(options *options) *cobra.Command {
 	}
 	addNamespaceFlag(command, options)
 	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
-	command.Flags().StringVar(&options.memoryType, "type", "fact", "memory type")
+	command.Flags().StringVar(&options.memoryType, "type", "doc", "memory type")
 	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
 	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
 	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
@@ -488,9 +565,11 @@ func addMemoryFlags(command *cobra.Command, options *options) {
 	command.Flags().StringVar(&options.source, "source", "", "memory source path or identifier")
 	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
 	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
+	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
+	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids")
+	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related ids")
 	_ = command.MarkFlagRequired("namespace")
 	_ = command.MarkFlagRequired("subject")
-	_ = command.MarkFlagRequired("content")
 }
 
 func addNamespaceFlag(command *cobra.Command, options *options) {
@@ -520,6 +599,37 @@ func parseMetadata(value string) (map[string]any, error) {
 		return nil, domain.NewInvalidArgumentError("metadata must be a JSON object")
 	}
 	return metadata, nil
+}
+
+func readContentInput(specified bool, path, fallback string) (string, error) {
+	if !specified {
+		return fallback, nil
+	}
+	if path == "-" {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", domain.NewImportError("unable to read content from stdin", err)
+		}
+		return string(content), nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", domain.NewImportError("unable to read content file", err)
+	}
+	return string(content), nil
+}
+
+func memorySummary(memory domain.Memory) domain.MemorySummary {
+	replacer := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+	runes := []rune(replacer.Replace(memory.Content))
+	if len(runes) > 200 {
+		runes = runes[:200]
+	}
+	return domain.MemorySummary{
+		ID: memory.ID, NamespaceID: memory.NamespaceID, Subject: memory.Subject, Type: memory.Type,
+		Snippet: string(runes), Reason: memory.Reason, Tags: memory.Tags, Metadata: memory.Metadata,
+		Source: memory.Source, CreatedAt: memory.CreatedAt, UpdatedAt: memory.UpdatedAt, ExpiresAt: memory.ExpiresAt,
+	}
 }
 
 func responseCommandName(command *cobra.Command) string {
@@ -568,7 +678,7 @@ func exitCodeForError(err error) int {
 	switch {
 	case errors.As(err, &domainError):
 		switch domainError.Code {
-		case domain.ErrorInvalidArgument, domain.ErrorInvalidNamespace, domain.ErrorInvalidMemoryType, domain.ErrorImport:
+		case domain.ErrorInvalidArgument, domain.ErrorInvalidNamespace, domain.ErrorInvalidMemoryType, domain.ErrorImport, domain.ErrorAmbiguousID:
 			return 2
 		case domain.ErrorNamespaceNotFound, domain.ErrorMemoryNotFound:
 			return 3

@@ -9,6 +9,7 @@ const (
 	ErrorNamespaceConflict          = "NAMESPACE_CONFLICT"
 	ErrorPossibleDuplicateNamespace = "POSSIBLE_DUPLICATE_NAMESPACE"
 	ErrorMemoryNotFound             = "MEMORY_NOT_FOUND"
+	ErrorAmbiguousID                = "AMBIGUOUS_ID"
 	ErrorInvalidMemoryType          = "INVALID_MEMORY_TYPE"
 	ErrorDatabase                   = "DATABASE_ERROR"
 	ErrorImport                     = "IMPORT_ERROR"
@@ -58,6 +59,20 @@ func NewPossibleDuplicateNamespaceError(candidates []string) *Error {
 
 func NewMemoryNotFoundError(id string) *Error {
 	return &Error{Code: ErrorMemoryNotFound, Message: fmt.Sprintf("Memory %q does not exist.", id)}
+}
+
+func NewAmbiguousIDError(id string) *Error {
+	return &Error{
+		Code:    ErrorAmbiguousID,
+		Message: fmt.Sprintf("Memory id prefix %q matches multiple memories.", id),
+	}
+}
+
+func NewRelatedMemoryNotFoundError(id string) *Error {
+	return &Error{
+		Code:    ErrorInvalidArgument,
+		Message: fmt.Sprintf("Related memory id %q does not exist.", id),
+	}
 }
 
 func NewInvalidMemoryTypeError(input string) *Error {

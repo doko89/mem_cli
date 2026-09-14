@@ -73,6 +73,26 @@ func (r *Memories) List(ctx context.Context, filter app.MemoryFilter) ([]domain.
 	return r.repository.listMemories(ctx, filter)
 }
 
+func (r *Memories) ResolveID(ctx context.Context, target string) (string, error) {
+	return r.repository.resolveMemoryID(ctx, target)
+}
+
+func (r *Memories) GetDetails(ctx context.Context, id string, includeExpired bool) (domain.MemoryDetails, error) {
+	return r.repository.getMemoryDetails(ctx, id, includeExpired)
+}
+
+func (r *Memories) ReplaceLinks(ctx context.Context, fromID string, targetIDs []string, relation string) ([]domain.MemoryLink, error) {
+	return r.repository.replaceMemoryLinks(ctx, fromID, targetIDs, relation)
+}
+
+func (r *Memories) History(ctx context.Context, id string) ([]domain.MemoryVersionSummary, error) {
+	return r.repository.memoryHistory(ctx, id)
+}
+
+func (r *Memories) Version(ctx context.Context, id string, version int64) (domain.MemoryVersionSnapshot, error) {
+	return r.repository.memoryVersion(ctx, id, version)
+}
+
 func (r *Memories) Search(ctx context.Context, filter app.SearchFilter) ([]domain.SearchResult, error) {
 	return r.repository.searchMemories(ctx, filter)
 }
@@ -92,11 +112,37 @@ func Open(path string) (*Repository, error) {
 	}
 	database.SetMaxOpenConns(1)
 	repository := &Repository{db: database}
+	if err := repository.backupBeforeMigration(path); err != nil {
+		_ = database.Close()
+		return nil, err
+	}
 	if err := repository.migrate(); err != nil {
 		_ = database.Close()
 		return nil, err
 	}
 	return repository, nil
+}
+
+func (r *Repository) backupBeforeMigration(path string) error {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		if err != nil && !os.IsNotExist(err) {
+			return wrapDatabase("unable to inspect database before migration", err)
+		}
+		return nil
+	}
+	var version int
+	if err := r.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return wrapDatabase("unable to read database schema version", err)
+	}
+	if version >= 2 {
+		return nil
+	}
+	backup := path + ".bak-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	if _, err := r.db.Exec(`VACUUM INTO ?`, backup); err != nil {
+		return wrapDatabase("unable to create pre-migration backup", err)
+	}
+	return nil
 }
 
 func (r *Repository) Close() error {
@@ -159,6 +205,23 @@ func (r *Repository) migrate() error {
 			INSERT INTO memories_fts(memory_id, subject, content, reason)
 			VALUES (NEW.id, NEW.subject, NEW.content, coalesce(NEW.reason, ''));
 		END`,
+		`CREATE TABLE IF NOT EXISTS memory_links (
+			from_id TEXT NOT NULL,
+			to_id TEXT NOT NULL,
+			relation TEXT NOT NULL DEFAULT 'related',
+			created_at TEXT,
+			PRIMARY KEY(from_id, to_id, relation)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_links_to_id ON memory_links(to_id)`,
+		`CREATE TABLE IF NOT EXISTS memory_versions (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT,
+			memory_id TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			data TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE(memory_id, version)
+		)`,
+		`PRAGMA user_version = 2`,
 	}
 	for _, statement := range statements {
 		if _, err := r.db.Exec(statement); err != nil {
@@ -344,6 +407,28 @@ func (r *Repository) deleteNamespace(ctx context.Context, target string, recursi
 	)`, namespace.ID); err != nil {
 		return wrapDatabase("unable to delete namespace memories", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_links
+		WHERE from_id IN (
+			WITH RECURSIVE descendants(id) AS (
+				SELECT id FROM namespaces WHERE id = ?
+				UNION ALL
+				SELECT n.id FROM namespaces n JOIN descendants d ON n.parent_id = d.id
+			)
+			SELECT id FROM descendants
+		)`, namespace.ID); err != nil {
+		return wrapDatabase("unable to delete outgoing namespace memory links", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_links
+		WHERE to_id IN (
+			WITH RECURSIVE descendants(id) AS (
+				SELECT id FROM namespaces WHERE id = ?
+				UNION ALL
+				SELECT n.id FROM namespaces n JOIN descendants d ON n.parent_id = d.id
+			)
+			SELECT id FROM descendants
+		)`, namespace.ID); err != nil {
+		return wrapDatabase("unable to delete incoming namespace memory links", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM namespaces WHERE id IN (
 		WITH RECURSIVE descendants(id) AS (
 			SELECT id FROM namespaces WHERE id = ?
@@ -408,34 +493,91 @@ func (r *Repository) updateMemory(ctx context.Context, memory domain.Memory) (do
 	if err != nil {
 		return domain.Memory{}, err
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE memories SET subject = ?, type = ?, content = ?, reason = ?, tags = ?, metadata = ?, source = ?, updated_at = ?, expires_at = ? WHERE id = ?`,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Memory{}, wrapDatabase("unable to begin memory update transaction", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var previous domain.Memory
+	var previousJSON string
+	row := tx.QueryRowContext(ctx, memorySelect()+` WHERE m.id = ?`, memory.ID)
+	previous, err = scanMemory(row)
+	if err == sql.ErrNoRows {
+		return domain.Memory{}, domain.NewMemoryNotFoundError(memory.ID)
+	}
+	if err != nil {
+		return domain.Memory{}, err
+	}
+	encoded, err := json.Marshal(previous)
+	if err != nil {
+		return domain.Memory{}, wrapDatabase("unable to encode memory version", err)
+	}
+	previousJSON = string(encoded)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_versions(memory_id, version, data, created_at)
+		SELECT ?, coalesce(max(version), 0) + 1, ?, ?
+		FROM memory_versions WHERE memory_id = ?`,
+		memory.ID, previousJSON, timeNow(), memory.ID,
+	); err != nil {
+		return domain.Memory{}, wrapDatabase("unable to create memory version", err)
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE memories SET subject = ?, type = ?, content = ?, reason = ?, tags = ?, metadata = ?, source = ?, updated_at = ?, expires_at = ? WHERE id = ?`,
 		memory.Subject, string(memory.Type), memory.Content, nullableText(memory.Reason), tags, metadata, source, memory.UpdatedAt, nullableText(memory.ExpiresAt), memory.ID,
 	)
 	if err != nil {
 		return domain.Memory{}, wrapDatabase("unable to update memory", err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return domain.Memory{}, wrapDatabase("unable to verify memory update", err)
+	if err := tx.Commit(); err != nil {
+		return domain.Memory{}, wrapDatabase("unable to commit memory update", err)
 	}
-	if affected == 0 {
-		return domain.Memory{}, domain.NewMemoryNotFoundError(memory.ID)
-	}
+	committed = true
 	return memory, nil
 }
 
 func (r *Repository) deleteMemory(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return wrapDatabase("unable to delete memory", err)
+		return wrapDatabase("unable to begin memory delete transaction", err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return wrapDatabase("unable to verify memory delete", err)
-	}
-	if affected == 0 {
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	row := tx.QueryRowContext(ctx, memorySelect()+` WHERE m.id = ?`, id)
+	memory, err := scanMemory(row)
+	if err == sql.ErrNoRows {
 		return domain.NewMemoryNotFoundError(id)
 	}
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(memory)
+	if err != nil {
+		return wrapDatabase("unable to encode memory version", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_versions(memory_id, version, data, created_at)
+		SELECT ?, coalesce(max(version), 0) + 1, ?, ?
+		FROM memory_versions WHERE memory_id = ?`,
+		id, string(encoded), timeNow(), id,
+	); err != nil {
+		return wrapDatabase("unable to create final memory version", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id); err != nil {
+		return wrapDatabase("unable to delete memory", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_links WHERE from_id = ? OR to_id = ?`, id, id); err != nil {
+		return wrapDatabase("unable to delete memory links", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return wrapDatabase("unable to commit memory delete", err)
+	}
+	committed = true
 	return nil
 }
 
@@ -453,6 +595,13 @@ func (r *Repository) listMemories(ctx context.Context, filter app.MemoryFilter) 
 	if filter.Tag != "" {
 		query += ` AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE json_each.value = ?)`
 		args = append(args, filter.Tag)
+	}
+	if filter.RelatedTo != "" {
+		query += ` AND (
+			EXISTS (SELECT 1 FROM memory_links out_link WHERE out_link.from_id = m.id AND out_link.to_id = ?)
+			OR EXISTS (SELECT 1 FROM memory_links back_link WHERE back_link.from_id = ? AND back_link.to_id = m.id)
+		)`
+		args = append(args, filter.RelatedTo, filter.RelatedTo)
 	}
 	if !filter.IncludeExpired {
 		query += ` AND (m.expires_at IS NULL OR m.expires_at >= ?)`
