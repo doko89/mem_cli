@@ -210,6 +210,59 @@ func TestMCPForget(t *testing.T) {
 	}
 }
 
+func TestMCPForgetExportNamespaces(t *testing.T) {
+	session := newSession(t)
+
+	// Add two memories in two namespaces.
+	mustText(t, callTool(t, session, "memory_add", map[string]any{
+		"namespace": "test/gap/one",
+		"subject":   "doomed",
+		"content":   "this memory will be forgotten",
+	}))
+	mustText(t, callTool(t, session, "memory_add", map[string]any{
+		"namespace": "test/gap/two",
+		"subject":   "keeper",
+		"content":   "this memory survives",
+	}))
+
+	// Namespace listing must see both.
+	nsOut := mustText(t, callTool(t, session, "memory_namespace_list", map[string]any{"prefix": "test/gap"}))
+	for _, want := range []string{"test/gap/one", "test/gap/two"} {
+		if !contains(nsOut, want) {
+			t.Fatalf("namespace list missing %s: %s", want, nsOut)
+		}
+	}
+
+	// Resolve the doomed memory's ID via search.
+	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
+		"namespace": "test/gap/one",
+		"query":     "forgotten",
+	}))
+	var payload struct {
+		Memories []struct {
+			ID string `json:"id"`
+		} `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
+		t.Fatalf("bad search payload: %s err=%v", search, err)
+	}
+	id := payload.Memories[0].ID
+
+	// Forget it, then confirm it is gone but the keeper survives.
+	got := mustText(t, callTool(t, session, "memory_forget", map[string]any{"id": id}))
+	if !contains(got, `"deleted":true`) {
+		t.Fatalf("forget result unexpected: %s", got)
+	}
+	result := callTool(t, session, "memory_get", map[string]any{"id": id})
+	if !result.IsError {
+		t.Fatalf("expected error fetching forgotten memory, got: %v", result.Content)
+	}
+	export := mustText(t, callTool(t, session, "memory_export", map[string]any{"namespace": "test/gap", "subtree": true}))
+	if contains(export, "doomed") || !contains(export, "keeper") {
+		t.Fatalf("export after forget unexpected: %s", export)
+	}
+}
+
 func TestMCPImportInline(t *testing.T) {
 	session := newSession(t)
 
