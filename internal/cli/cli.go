@@ -205,6 +205,10 @@ func addCommand(options *options) *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
+			memoryType := "fact"
+			if options.changed["type"] {
+				memoryType = options.memoryType
+			}
 			content, err := readContentInput(options.changed["file"], options.contentFile, options.content)
 			if err != nil {
 				return nil, err
@@ -212,7 +216,7 @@ func addCommand(options *options) *cobra.Command {
 			memory, err := service.AddMemory(ctx, app.AddInput{
 				Namespace:  options.namespace,
 				Subject:    options.subject,
-				Type:       options.memoryType,
+				Type:       memoryType,
 				Content:    content,
 				Reason:     options.reason,
 				Tags:       options.tags,
@@ -224,6 +228,9 @@ func addCommand(options *options) *cobra.Command {
 			})
 			if err != nil {
 				return nil, err
+			}
+			if len(options.related) > 0 {
+				return service.GetMemory(ctx, memory.ID, false)
 			}
 			return memory, nil
 		}),
@@ -251,10 +258,14 @@ func listCommand(options *options) *cobra.Command {
 		Use:   "list",
 		Short: "List memories in a namespace",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
+			var memoryType string
+			if options.changed["type"] {
+				memoryType = options.memoryType
+			}
 			list, err := service.ListMemories(ctx, app.MemoryFilter{
 				NamespaceID: options.namespace,
 				Subject:     options.subject,
-				Type:        domain.MemoryType(options.memoryType),
+				Type:        domain.MemoryType(memoryType),
 				Tag:         options.tag,
 				Subtree:     options.subtree,
 				RelatedTo:   options.relatedTo,
@@ -413,7 +424,7 @@ func historyCommand(options *options) *cobra.Command {
 }
 
 func revertCommand(options *options) *cobra.Command {
-	return &cobra.Command{
+	command := &cobra.Command{
 		Use:   "revert <memory-id> --version N",
 		Args:  cobra.ExactArgs(1),
 		Short: "Restore a memory from a saved version",
@@ -421,6 +432,9 @@ func revertCommand(options *options) *cobra.Command {
 			return service.RevertMemory(ctx, options.args()[0], options.version)
 		}),
 	}
+	command.Flags().Int64Var(&options.version, "version", 0, "version number to restore")
+	_ = command.MarkFlagRequired("version")
+	return command
 }
 
 func contextCommand(options *options) *cobra.Command {
@@ -455,7 +469,11 @@ func importCommand(options *options) *cobra.Command {
 			if err != nil {
 				return nil, err
 			}
-			return service.ImportFile(ctx, options.args()[0], options.namespace, options.subject, options.memoryType, options.tags, metadata, options.expiresAt)
+			memoryType := "doc"
+			if options.changed["type"] {
+				memoryType = options.memoryType
+			}
+			return service.ImportFile(ctx, options.args()[0], options.namespace, options.subject, memoryType, options.tags, metadata, options.expiresAt)
 		}),
 	}
 	addNamespaceFlag(command, options)
@@ -543,11 +561,15 @@ func renderMarkdown(namespace string, memories []domain.Memory) markdownOutput {
 }
 
 func searchFilter(options *options, matchMode string) app.SearchFilter {
+	var memoryType string
+	if options.changed["type"] {
+		memoryType = options.memoryType
+	}
 	return app.SearchFilter{
 		Query:       options.query,
 		NamespaceID: options.namespace,
 		Subject:     options.subject,
-		Type:        domain.MemoryType(options.memoryType),
+		Type:        domain.MemoryType(memoryType),
 		Tag:         options.tag,
 		Subtree:     options.subtree,
 		MatchMode:   matchMode,
