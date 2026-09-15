@@ -181,6 +181,14 @@ func namespaceCommand(options *options) *cobra.Command {
 			return service.GetNamespace(ctx, options.args()[0])
 		}),
 	}
+	resolve := &cobra.Command{
+		Use:   "resolve <ns_id>",
+		Args:  cobra.ExactArgs(1),
+		Short: "Resolve a namespace ID to its namespace object",
+		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
+			return service.GetNamespace(ctx, options.args()[0])
+		}),
+	}
 	delete := &cobra.Command{
 		Use:   "delete <id|path>",
 		Args:  cobra.ExactArgs(1),
@@ -194,7 +202,7 @@ func namespaceCommand(options *options) *cobra.Command {
 		}),
 	}
 	delete.Flags().BoolVar(&options.recursive, "recursive", false, "recursively delete child namespaces and their memories")
-	command.AddCommand(create, list, get, delete)
+	command.AddCommand(create, list, get, resolve, delete)
 	return command
 }
 

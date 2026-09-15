@@ -27,6 +27,7 @@ var memoryTypes = map[MemoryType]struct{}{
 type Memory struct {
 	ID          string         `json:"id"`
 	NamespaceID string         `json:"namespace_id"`
+	Namespace   *string        `json:"namespace"`
 	Subject     string         `json:"subject"`
 	Type        MemoryType     `json:"type"`
 	Content     string         `json:"content"`
@@ -57,6 +58,7 @@ type MemoryDetails struct {
 type MemorySummary struct {
 	ID          string         `json:"id"`
 	NamespaceID string         `json:"namespace_id"`
+	Namespace   *string        `json:"namespace"`
 	Subject     string         `json:"subject"`
 	Type        MemoryType     `json:"type"`
 	Snippet     string         `json:"snippet"`
@@ -97,14 +99,15 @@ type MemoryVersionSnapshot struct {
 }
 
 type SearchResult struct {
-	ID        string     `json:"id"`
-	Namespace string     `json:"namespace,omitempty"`
-	Subject   string     `json:"subject"`
-	Type      MemoryType `json:"type"`
-	Snippet   string     `json:"snippet"`
-	Score     float64    `json:"score"`
-	CreatedAt string     `json:"created_at"`
-	UpdatedAt string     `json:"updated_at"`
+	ID          string     `json:"id"`
+	NamespaceID string     `json:"namespace_id"`
+	Namespace   *string    `json:"namespace"`
+	Subject     string     `json:"subject"`
+	Type        MemoryType `json:"type"`
+	Snippet     string     `json:"snippet"`
+	Score       float64    `json:"score"`
+	CreatedAt   string     `json:"created_at"`
+	UpdatedAt   string     `json:"updated_at"`
 }
 
 func ValidateMemoryType(input string) (MemoryType, error) {

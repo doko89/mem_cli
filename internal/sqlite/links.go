@@ -108,11 +108,12 @@ type memoryLinkGroups struct {
 
 func (r *Repository) memoryLinks(ctx context.Context, id string) (memoryLinkGroups, error) {
 	query := `SELECT l.from_id, l.to_id, coalesce(l.relation, 'related'), coalesce(l.created_at, ''),
-		m.id, m.namespace_id, m.subject, m.type, m.content, coalesce(m.reason, ''),
+		m.id, m.namespace_id, n.normalized_name, m.subject, m.type, m.content, coalesce(m.reason, ''),
 		coalesce(m.tags, 'null'), coalesce(m.metadata, 'null'), coalesce(m.source, 'null'),
 		m.created_at, m.updated_at, coalesce(m.expires_at, '')
 	FROM memory_links l
 	JOIN memories m ON m.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
+	LEFT JOIN namespaces n ON n.id = m.namespace_id
 	WHERE l.from_id = ? OR l.to_id = ?
 	ORDER BY coalesce(l.relation, 'related'), coalesce(l.created_at, ''), m.id`
 	rows, err := r.db.QueryContext(ctx, query, id, id, id)
@@ -126,7 +127,7 @@ func (r *Repository) memoryLinks(ctx context.Context, id string) (memoryLinkGrou
 		var memory domain.Memory
 		var tags, metadata, source string
 		err := rows.Scan(&link.FromID, &link.ToID, &link.Relation, &link.CreatedAt,
-			&memory.ID, &memory.NamespaceID, &memory.Subject, &memory.Type, &memory.Content, &memory.Reason,
+			&memory.ID, &memory.NamespaceID, &memory.Namespace, &memory.Subject, &memory.Type, &memory.Content, &memory.Reason,
 			&tags, &metadata, &source, &memory.CreatedAt, &memory.UpdatedAt, &memory.ExpiresAt,
 		)
 		if err != nil {

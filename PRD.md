@@ -251,6 +251,7 @@ Memory memiliki struktur:
 Memory
 ├── id
 ├── namespace_id
+├── namespace
 ├── subject
 ├── type
 ├── content

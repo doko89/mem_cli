@@ -93,6 +93,10 @@ type namespaceListArgs struct {
 	Prefix string `json:"prefix,omitempty" jsonschema:"filter by namespace path prefix"`
 }
 
+type namespaceGetArgs struct {
+	ID string `json:"id" jsonschema:"namespace ID (ns_...) (required)"`
+}
+
 type searchArgs struct {
 	Namespace string `json:"namespace" jsonschema:"namespace path to search in (required)"`
 	Query     string `json:"query" jsonschema:"FTS5 query, keywords or quoted phrases (required)"`
@@ -262,6 +266,19 @@ func registerTools(server *mcp.Server, databasePath string) {
 			return nil, nil, toolError(err)
 		}
 		return textResult(map[string]any{"count": len(namespaces), "namespaces": namespaces})
+	})
+
+	addTool(server, "memory_namespace_get", "Get one namespace by ID to resolve its current namespace path.", func(ctx context.Context, _ *mcp.CallToolRequest, in namespaceGetArgs) (*mcp.CallToolResult, any, error) {
+		service, done, err := open(ctx)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		defer done()
+		namespace, err := service.GetNamespace(ctx, in.ID)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		return textResult(namespace)
 	})
 
 	addTool(server, "memory_get", "Get one full memory by ID, including links and backlinks. Expired entries are excluded unless include_expired is true.", func(ctx context.Context, _ *mcp.CallToolRequest, in getArgs) (*mcp.CallToolResult, any, error) {

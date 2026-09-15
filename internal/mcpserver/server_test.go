@@ -311,6 +311,30 @@ func TestMCPSubtreeDefaultsToTrue(t *testing.T) {
 	}
 }
 
+func TestMCPNamespaceGetByID(t *testing.T) {
+	session := newSession(t)
+
+	added := mustText(t, callTool(t, session, "memory_add", map[string]any{
+		"namespace": "ayla/main",
+		"subject":   "owner",
+		"content":   "namespace owner content",
+	}))
+	var memory struct {
+		NamespaceID string `json:"namespace_id"`
+	}
+	if err := json.Unmarshal([]byte(added), &memory); err != nil {
+		t.Fatalf("decode memory: %v", err)
+	}
+	if memory.NamespaceID == "" {
+		t.Fatalf("namespace ID missing: %s", added)
+	}
+
+	namespaceJSON := mustText(t, callTool(t, session, "memory_namespace_get", map[string]any{"id": memory.NamespaceID}))
+	if !contains(namespaceJSON, `"normalized_name":"ayla/main"`) {
+		t.Fatalf("namespace did not resolve to path: %s", namespaceJSON)
+	}
+}
+
 func TestMCPErrorMapping(t *testing.T) {
 	session := newSession(t)
 

@@ -163,6 +163,7 @@ func (s *Service) AddMemory(ctx context.Context, input AddInput) (domain.Memory,
 	}
 	memory := domain.Memory{
 		NamespaceID: namespace.ID,
+		Namespace:   &namespace.NormalizedName,
 		Subject:     strings.TrimSpace(input.Subject),
 		Type:        memoryType,
 		Content:     input.Content,

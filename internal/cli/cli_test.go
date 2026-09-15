@@ -91,6 +91,25 @@ func TestNamespaceGetAndListUseSnakeCaseJSON(t *testing.T) {
 	}
 }
 
+func TestNamespaceResolveByID(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "mem.db")
+	createOutput, resolveOutput := &bytes.Buffer{}, &bytes.Buffer{}
+	if code := cli.Run([]string{"--db", database, "ns", "create", "ayla/main"}, createOutput, createOutput); code != 0 {
+		t.Fatalf("namespace create exit code: %d output=%s", code, createOutput.String())
+	}
+	var createResponse map[string]any
+	if err := json.Unmarshal(createOutput.Bytes(), &createResponse); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	namespaceID := createResponse["data"].(map[string]any)["id"].(string)
+	if code := cli.Run([]string{"--db", database, "ns", "resolve", namespaceID}, resolveOutput, resolveOutput); code != 0 {
+		t.Fatalf("namespace resolve exit code: %d output=%s", code, resolveOutput.String())
+	}
+	if !strings.Contains(resolveOutput.String(), `"normalized_name":"ayla/main"`) {
+		t.Fatalf("namespace did not resolve to path: %s", resolveOutput.String())
+	}
+}
+
 func TestInvalidArgumentOutputsJSONAndExitCode(t *testing.T) {
 	var output bytes.Buffer
 	exitCode := cli.Run([]string{"--db", filepath.Join(t.TempDir(), "mem.db"), "add", "--namespace", "work"}, &output, &output)

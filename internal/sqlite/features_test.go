@@ -29,6 +29,138 @@ func addTestMemory(t *testing.T, service *app.Service, subject, content string, 
 	return memory
 }
 
+func TestMemoryOutputsResolveCurrentNamespacePath(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "mem.db")
+	repository, err := sqlite.Open(databasePath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Fatalf("close sqlite: %v", err)
+		}
+	})
+	service := app.NewService(repository.NamespaceRepository(), repository.MemoryRepository())
+	ctx := context.Background()
+	namespace, _, err := service.CreateNamespace(ctx, "a/b/c")
+	if err != nil {
+		t.Fatalf("create nested namespace: %v", err)
+	}
+	memory, err := service.AddMemory(ctx, app.AddInput{
+		Namespace: "a/b/c",
+		Subject:   "owner",
+		Type:      "fact",
+		Content:   "namespace owner content",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	if memory.Namespace == nil || *memory.Namespace != "a/b/c" {
+		t.Fatalf("add namespace path: %#v", memory.Namespace)
+	}
+	target, err := service.AddMemory(ctx, app.AddInput{
+		Namespace: "a/b/c",
+		Subject:   "target",
+		Type:      "fact",
+		Content:   "linked target content",
+	})
+	if err != nil {
+		t.Fatalf("add linked memory: %v", err)
+	}
+	updated, err := service.UpdateMemory(ctx, app.UpdateInput{
+		ID: memory.ID, RelatedIDs: []string{target.ID}, RelatedSet: true,
+	})
+	if err != nil {
+		t.Fatalf("update memory: %v", err)
+	}
+	if updated.Namespace == nil || *updated.Namespace != "a/b/c" {
+		t.Fatalf("update namespace path: %#v", updated.Namespace)
+	}
+
+	details, err := service.GetMemory(ctx, memory.ID, false)
+	if err != nil {
+		t.Fatalf("get memory: %v", err)
+	}
+	if details.Namespace == nil || *details.Namespace != "a/b/c" || details.NamespaceID != namespace.ID {
+		t.Fatalf("get namespace resolution: id=%q path=%#v", details.NamespaceID, details.Namespace)
+	}
+	if len(details.RelatedOut) != 1 || details.RelatedOut[0].Memory == nil || details.RelatedOut[0].Memory.Namespace == nil {
+		t.Fatalf("linked namespace resolution: %#v", details.RelatedOut)
+	}
+	list, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "a/b/c"})
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list memories: count=%d err=%v", len(list), err)
+	}
+	for _, item := range list {
+		if item.Namespace == nil || *item.Namespace != "a/b/c" || item.NamespaceID == "" {
+			t.Fatalf("list namespace resolution: %#v", item)
+		}
+	}
+	search, err := service.SearchMemories(ctx, app.SearchFilter{NamespaceID: "a/b/c", Query: "namespace owner"})
+	if err != nil || len(search) != 1 {
+		t.Fatalf("search memories: results=%#v err=%v", search, err)
+	}
+	if search[0].NamespaceID != namespace.ID || search[0].Namespace == nil || *search[0].Namespace != "a/b/c" {
+		t.Fatalf("search namespace resolution: %#v", search[0])
+	}
+	exported, err := service.ExportMemories(ctx, "a/b/c", false)
+	if err != nil || len(exported) != 2 {
+		t.Fatalf("export memories: count=%d err=%v", len(exported), err)
+	}
+	for _, item := range exported {
+		if item.Namespace == nil || *item.Namespace != "a/b/c" || item.NamespaceID == "" {
+			t.Fatalf("export namespace resolution: %#v", item)
+		}
+	}
+	reverted, err := service.RevertMemory(ctx, memory.ID, 1)
+	if err != nil {
+		t.Fatalf("revert memory: %v", err)
+	}
+	if reverted.Namespace == nil || *reverted.Namespace != "a/b/c" {
+		t.Fatalf("revert namespace path: %#v", reverted.Namespace)
+	}
+
+	raw, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open raw database: %v", err)
+	}
+	if _, err := raw.Exec(`UPDATE namespaces SET name = 'a/b/renamed', normalized_name = 'a/b/renamed' WHERE id = ?`, namespace.ID); err != nil {
+		t.Fatalf("rename namespace: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw database: %v", err)
+	}
+	renamed, err := service.GetMemory(ctx, memory.ID, false)
+	if err != nil {
+		t.Fatalf("get renamed memory: %v", err)
+	}
+	if renamed.Namespace == nil || *renamed.Namespace != "a/b/renamed" {
+		t.Fatalf("renamed namespace path: %#v", renamed.Namespace)
+	}
+
+	orphan, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open orphan database: %v", err)
+	}
+	if _, err := orphan.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign keys: %v", err)
+	}
+	if _, err := orphan.Exec(`INSERT INTO memories(id, namespace_id, subject, type, content, created_at, updated_at)
+		VALUES ('mem_orphan', 'ns_orphan', 'orphan', 'fact', 'orphan content', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert orphan memory: %v", err)
+	}
+	if err := orphan.Close(); err != nil {
+		t.Fatalf("close orphan database: %v", err)
+	}
+	orphanMemory, err := service.GetMemory(ctx, "mem_orphan", true)
+	if err != nil {
+		t.Fatalf("get orphan memory: %v", err)
+	}
+	if orphanMemory.NamespaceID != "ns_orphan" || orphanMemory.Namespace != nil {
+		t.Fatalf("orphan namespace resolution: id=%q path=%#v", orphanMemory.NamespaceID, orphanMemory.Namespace)
+	}
+}
+
 func TestMemoryLinksBacklinksAndDeletion(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()

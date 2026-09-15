@@ -58,6 +58,8 @@ fact | decision | preference | todo | entity | doc
 
 `list`, `search`, `context`, dan `export` tidak memfilter tipe secara default, sehingga semua enam tipe ikut ditampilkan. Gunakan `--type` untuk mempersempit hasil.
 
+Output memory menyertakan `namespace_id` sebagai stable key dan `namespace` sebagai nama path yang di-resolve saat dibaca. Jika data namespace orphan, `namespace` bernilai `null` tanpa menggagalkan query.
+
 ## Contoh penggunaan
 
 Buat namespace:
@@ -104,6 +106,14 @@ mem search --namespace work/infra --query "control*"
 ```
 
 Wildcard hanya valid di akhir term; penggunaan lain mengembalikan `INVALID_ARGUMENT`.
+
+Resolve sebuah namespace ID ke nama path terkininya:
+
+```bash
+mem ns resolve ns_d24fe047b55a2d07
+```
+
+MCP menyediakan utilitas yang sama sebagai `memory_namespace_get`.
 
 Untuk konteks agent, gunakan mode pencarian longgar:
 
@@ -293,7 +303,7 @@ Contoh error code antara lain:
 
 | Command | Fungsi |
 |---|---|
-| `mem ns create/list/get/delete` | Mengelola namespace |
+| `mem ns create/list/get/resolve/delete` | Mengelola namespace |
 | `mem add` | Menambah memory |
 | `mem get` | Mengambil satu memory lengkap |
 | `mem list` | Menampilkan ringkasan memory |

@@ -562,10 +562,10 @@ func (r *Repository) searchMemories(ctx context.Context, filter app.SearchFilter
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT m.id, n.normalized_name, m.subject, m.type, snippet(memories_fts, 2, '', '', '…', 18), bm25(memories_fts), m.created_at, m.updated_at
+	query := `SELECT m.id, m.namespace_id, n.normalized_name, m.subject, m.type, snippet(memories_fts, 2, '', '', '…', 18), bm25(memories_fts), m.created_at, m.updated_at
 		FROM memories_fts
 		JOIN memories m ON m.id = memories_fts.memory_id
-		JOIN namespaces n ON n.id = m.namespace_id
+		LEFT JOIN namespaces n ON n.id = m.namespace_id
 		WHERE memories_fts MATCH ? AND ` + namespaceScope(filter.NamespaceID, filter.Subtree) + ` AND (m.expires_at IS NULL OR m.expires_at >= ?)`
 	args := append([]any{ftsQuery}, namespaceScopeArgs(filter.NamespaceID, filter.Subtree)...)
 	args = append(args, timeNow())
@@ -592,7 +592,7 @@ func (r *Repository) searchMemories(ctx context.Context, filter app.SearchFilter
 	for rows.Next() {
 		var result domain.SearchResult
 		var score float64
-		if err := rows.Scan(&result.ID, &result.Namespace, &result.Subject, &result.Type, &result.Snippet, &score, &result.CreatedAt, &result.UpdatedAt); err != nil {
+		if err := rows.Scan(&result.ID, &result.NamespaceID, &result.Namespace, &result.Subject, &result.Type, &result.Snippet, &score, &result.CreatedAt, &result.UpdatedAt); err != nil {
 			return nil, wrapDatabase("unable to read search result", err)
 		}
 		result.Score = -score
@@ -605,8 +605,9 @@ func (r *Repository) searchMemories(ctx context.Context, filter app.SearchFilter
 }
 
 func memorySelect() string {
-	return `SELECT m.id, m.namespace_id, m.subject, m.type, m.content, coalesce(m.reason, ''), coalesce(m.tags, 'null'), coalesce(m.metadata, 'null'), coalesce(m.source, 'null'), m.created_at, m.updated_at, coalesce(m.expires_at, '')
-		FROM memories m`
+	return `SELECT m.id, m.namespace_id, n.normalized_name, m.subject, m.type, m.content, coalesce(m.reason, ''), coalesce(m.tags, 'null'), coalesce(m.metadata, 'null'), coalesce(m.source, 'null'), m.created_at, m.updated_at, coalesce(m.expires_at, '')
+		FROM memories m
+		LEFT JOIN namespaces n ON n.id = m.namespace_id`
 }
 
 func scanMemories(rows *sql.Rows) ([]domain.Memory, error) {
@@ -646,7 +647,7 @@ type rowScanner interface {
 func scanMemory(row rowScanner) (domain.Memory, error) {
 	var memory domain.Memory
 	var tags, metadata, source string
-	err := row.Scan(&memory.ID, &memory.NamespaceID, &memory.Subject, &memory.Type, &memory.Content, &memory.Reason, &tags, &metadata, &source, &memory.CreatedAt, &memory.UpdatedAt, &memory.ExpiresAt)
+	err := row.Scan(&memory.ID, &memory.NamespaceID, &memory.Namespace, &memory.Subject, &memory.Type, &memory.Content, &memory.Reason, &tags, &metadata, &source, &memory.CreatedAt, &memory.UpdatedAt, &memory.ExpiresAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return domain.Memory{}, domain.NewMemoryNotFoundError("")
