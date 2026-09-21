@@ -297,20 +297,28 @@ func TestRelatedTargetsResolveBySubjectWithIDPriority(t *testing.T) {
 	addTestMemory(t, service, base.ID[:8], "subject with an id prefix as its name", app.AddInput{})
 	unique := addTestMemory(t, service, "unique-target", "unique target", app.AddInput{})
 
-	assertRelatedResolution(t, service, ctx, "by-subject", "by unique subject", "unique-target", unique.ID, "subject resolution")
-	assertRelatedResolution(t, service, ctx, "by-id", "exact id wins over subject", base.ID, base.ID, "exact id priority")
-	assertRelatedResolution(t, service, ctx, "by-prefix", "unique prefix wins over subject", base.ID[:8], base.ID, "prefix id priority")
+	assertRelatedResolution(t, service, ctx, relatedCase{"by-subject", "by unique subject", "unique-target", unique.ID, "subject resolution"})
+	assertRelatedResolution(t, service, ctx, relatedCase{"by-id", "exact id wins over subject", base.ID, base.ID, "exact id priority"})
+	assertRelatedResolution(t, service, ctx, relatedCase{"by-prefix", "unique prefix wins over subject", base.ID[:8], base.ID, "prefix id priority"})
 	assertUpdateSubjectResolution(t, service, ctx, unique.ID)
 	assertAmbiguousRelatedSubject(t, service, ctx)
 	assertMissingRelatedSubject(t, service, ctx)
 }
 
-func assertRelatedResolution(t *testing.T, service *app.Service, ctx context.Context, subject, content, relatedID, wantID, label string) {
+type relatedCase struct {
+	subject   string
+	content   string
+	relatedID string
+	wantID    string
+	label     string
+}
+
+func assertRelatedResolution(t *testing.T, service *app.Service, ctx context.Context, c relatedCase) {
 	t.Helper()
-	source := addTestMemory(t, service, subject, content, app.AddInput{RelatedIDs: []string{relatedID}})
+	source := addTestMemory(t, service, c.subject, c.content, app.AddInput{RelatedIDs: []string{c.relatedID}})
 	details, err := service.GetMemory(ctx, source.ID, false)
-	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != wantID {
-		t.Fatalf("%s: details=%#v err=%v", label, details, err)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != c.wantID {
+		t.Fatalf("%s: details=%#v err=%v", c.label, details, err)
 	}
 }
 
