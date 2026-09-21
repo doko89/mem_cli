@@ -309,23 +309,47 @@ func listCommand(options *options) *cobra.Command {
 }
 
 func searchCommand(options *options) *cobra.Command {
+	return searchQueryCommand(options, searchQueryConfig{
+		use:          "search",
+		short:        "Search memories with FTS5",
+		queryUsage:   "full-text query",
+		matchDefault: "all",
+		limitUsage:   "maximum number of results",
+		matchMode:    "all",
+		resultKey:    "results",
+	})
+}
+
+// searchQueryConfig describes one FTS-backed query command. Search and
+// context share the same flags and differ only in these values.
+type searchQueryConfig struct {
+	use          string
+	short        string
+	queryUsage   string
+	matchDefault string
+	limitUsage   string
+	matchMode    string
+	resultKey    string
+}
+
+func searchQueryCommand(options *options, config searchQueryConfig) *cobra.Command {
 	command := &cobra.Command{
-		Use:   "search",
-		Short: "Search memories with FTS5",
+		Use:   config.use,
+		Short: config.short,
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			results, err := service.SearchMemories(ctx, searchFilter(options, "all"))
+			results, err := service.SearchMemories(ctx, searchFilter(options, config.matchMode))
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"results": results}, nil
+			return map[string]any{config.resultKey: results}, nil
 		}),
 	}
 	addNamespaceFlag(command, options)
-	command.Flags().StringVar(&options.query, "query", "", "full-text query")
-	command.Flags().StringVar(&options.matchMode, "match", "all", "term matching: all or any")
+	command.Flags().StringVar(&options.query, "query", "", config.queryUsage)
+	command.Flags().StringVar(&options.matchMode, "match", config.matchDefault, "term matching: all or any")
 	addFilterFlags(command, options)
 	command.Flags().BoolVar(&options.subtree, "subtree", true, usageSubtree)
-	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of results")
+	command.Flags().IntVar(&options.limit, "limit", 10, config.limitUsage)
 	_ = command.MarkFlagRequired("query")
 	return command
 }
@@ -474,25 +498,15 @@ func revertCommand(options *options) *cobra.Command {
 }
 
 func contextCommand(options *options) *cobra.Command {
-	command := &cobra.Command{
-		Use:   "context",
-		Short: "Retrieve compact agent context",
-		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			results, err := service.SearchMemories(ctx, searchFilter(options, "any"))
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"memories": results}, nil
-		}),
-	}
-	addNamespaceFlag(command, options)
-	command.Flags().StringVar(&options.query, "query", "", "natural-language or keyword query")
-	command.Flags().StringVar(&options.matchMode, "match", "any", "term matching: all or any")
-	addFilterFlags(command, options)
-	command.Flags().BoolVar(&options.subtree, "subtree", true, usageSubtree)
-	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of context items")
-	_ = command.MarkFlagRequired("query")
-	return command
+	return searchQueryCommand(options, searchQueryConfig{
+		use:          "context",
+		short:        "Retrieve compact agent context",
+		queryUsage:   "natural-language or keyword query",
+		matchDefault: "any",
+		limitUsage:   "maximum number of context items",
+		matchMode:    "any",
+		resultKey:    "memories",
+	})
 }
 
 func importCommand(options *options) *cobra.Command {

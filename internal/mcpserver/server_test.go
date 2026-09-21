@@ -46,6 +46,24 @@ func callTool(t *testing.T, session *mcp.ClientSession, name string, arguments a
 	return result
 }
 
+// searchSingleID runs memory_search and returns the ID of the single match.
+func searchSingleID(t *testing.T, session *mcp.ClientSession, namespace, query string) string {
+	t.Helper()
+	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
+		"namespace": namespace,
+		"query":     query,
+	}))
+	var payload struct {
+		Memories []struct {
+			ID string `json:"id"`
+		} `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
+		t.Fatalf("bad search payload: %s err=%v", search, err)
+	}
+	return payload.Memories[0].ID
+}
+
 func mustText(t *testing.T, result *mcp.CallToolResult) string {
 	t.Helper()
 	if result.IsError {
@@ -137,19 +155,7 @@ func TestMCPMetadataMerge(t *testing.T) {
 		"content":   "entry for metadata merge regression",
 		"metadata":  map[string]any{"alpha": "1", "beta": "2"},
 	}))
-	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
-		"namespace": "test/merge",
-		"query":     "merge regression",
-	}))
-	var payload struct {
-		Memories []struct {
-			ID string `json:"id"`
-		} `json:"memories"`
-	}
-	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
-		t.Fatalf("bad search payload: %s err=%v", search, err)
-	}
-	id := payload.Memories[0].ID
+	id := searchSingleID(t, session, "test/merge", "merge regression")
 
 	// Merge mode (metadata without metadata_set): new key is added, old keys kept.
 	got := mustText(t, callTool(t, session, "memory_update", map[string]any{
@@ -181,19 +187,7 @@ func TestMCPForget(t *testing.T) {
 		"subject":   "forget me",
 		"content":   "entry to be deleted via MCP",
 	}))
-	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
-		"namespace": "test/forget",
-		"query":     "deleted via MCP",
-	}))
-	var payload struct {
-		Memories []struct {
-			ID string `json:"id"`
-		} `json:"memories"`
-	}
-	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
-		t.Fatalf("bad search payload: %s err=%v", search, err)
-	}
-	id := payload.Memories[0].ID
+	id := searchSingleID(t, session, "test/forget", "deleted via MCP")
 
 	got := mustText(t, callTool(t, session, "memory_forget", map[string]any{"id": id}))
 	if !contains(got, `"deleted":true`) {
@@ -234,19 +228,7 @@ func TestMCPForgetExportNamespaces(t *testing.T) {
 	}
 
 	// Resolve the doomed memory's ID via search.
-	search := mustText(t, callTool(t, session, "memory_search", map[string]any{
-		"namespace": "test/gap/one",
-		"query":     "forgotten",
-	}))
-	var payload struct {
-		Memories []struct {
-			ID string `json:"id"`
-		} `json:"memories"`
-	}
-	if err := json.Unmarshal([]byte(search), &payload); err != nil || len(payload.Memories) != 1 {
-		t.Fatalf("bad search payload: %s err=%v", search, err)
-	}
-	id := payload.Memories[0].ID
+	id := searchSingleID(t, session, "test/gap/one", "forgotten")
 
 	// Forget it, then confirm it is gone but the keeper survives.
 	got := mustText(t, callTool(t, session, "memory_forget", map[string]any{"id": id}))
