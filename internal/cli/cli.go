@@ -21,6 +21,16 @@ import (
 
 const schemaVersion = 2
 
+const (
+	flagExpiresAt = "expires-at"
+	usageSubject  = "memory subject"
+	usageRelated  = "comma-separated memory ids or exact subjects in the namespace"
+	usageTags     = "comma-separated tags"
+	usageMetadata = "JSON object metadata"
+	usageExpiry   = "expiration time in RFC3339"
+	usageSubtree  = "include memories from descendant namespaces"
+)
+
 type Response struct {
 	OK      bool           `json:"ok"`
 	Command string         `json:"command,omitempty"`
@@ -189,7 +199,7 @@ func namespaceCommand(options *options) *cobra.Command {
 			return service.GetNamespace(ctx, options.args()[0])
 		}),
 	}
-	delete := &cobra.Command{
+	deleteCmd := &cobra.Command{
 		Use:   "delete <id|path>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Delete a namespace",
@@ -201,8 +211,8 @@ func namespaceCommand(options *options) *cobra.Command {
 			return map[string]any{"target": target, "deleted": true}, nil
 		}),
 	}
-	delete.Flags().BoolVar(&options.recursive, "recursive", false, "recursively delete child namespaces and their memories")
-	command.AddCommand(create, list, get, resolve, delete)
+	deleteCmd.Flags().BoolVar(&options.recursive, "recursive", false, "recursively delete child namespaces and their memories")
+	command.AddCommand(create, list, get, resolve, deleteCmd)
 	return command
 }
 
@@ -293,7 +303,7 @@ func listCommand(options *options) *cobra.Command {
 	addNamespaceFlag(command, options)
 	addFilterFlags(command, options)
 	command.Flags().StringVar(&options.relatedTo, "related-to", "", "include memories connected in either direction to this memory id")
-	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
+	command.Flags().BoolVar(&options.subtree, "subtree", true, usageSubtree)
 	command.Flags().IntVar(&options.limit, "limit", 100, "maximum number of memories")
 	return command
 }
@@ -314,7 +324,7 @@ func searchCommand(options *options) *cobra.Command {
 	command.Flags().StringVar(&options.query, "query", "", "full-text query")
 	command.Flags().StringVar(&options.matchMode, "match", "all", "term matching: all or any")
 	addFilterFlags(command, options)
-	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
+	command.Flags().BoolVar(&options.subtree, "subtree", true, usageSubtree)
 	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of results")
 	_ = command.MarkFlagRequired("query")
 	return command
@@ -326,70 +336,87 @@ func updateCommand(options *options) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Short: "Update mutable memory fields",
 		RunE: execute(options, func(ctx context.Context, service *app.Service) (any, error) {
-			input := app.UpdateInput{ID: options.args()[0]}
-			if options.changed["subject"] {
-				input.Subject = &options.subject
-			}
-			if options.changed["type"] {
-				input.Type = &options.memoryType
-			}
-			if options.changed["content"] {
-				input.Content = &options.content
-			}
-			if options.changed["reason"] {
-				input.Reason = &options.reason
-			}
-			if options.changed["tags"] {
-				input.Tags = options.tags
-				input.TagsSet = true
-			}
-			if options.changed["metadata"] {
-				metadata, err := parseMetadata(options.metadataJSON)
-				if err != nil {
-					return nil, err
-				}
-				input.Metadata = metadata
-				input.MetadataSet = true
-			}
-			if options.changed["source"] {
-				input.Source = &options.source
-			}
-			if options.changed["expires-at"] {
-				input.ExpiresAt = &options.expiresAt
-			}
-			if options.changed["clear-expiry"] && options.clearExpiry {
-				input.ClearExpiry = true
-			}
-			if options.changed["file"] {
-				content, err := readContentInput(true, options.contentFile, "")
-				if err != nil {
-					return nil, err
-				}
-				input.Content = &content
-			} else if options.changed["content"] {
-				input.Content = &options.content
-			}
-			if options.changed["related"] {
-				input.RelatedIDs = options.related
-				input.RelatedSet = true
-				input.Relation = options.relation
+			input, err := buildUpdateInput(options)
+			if err != nil {
+				return nil, err
 			}
 			return service.UpdateMemory(ctx, input)
 		}),
 	}
-	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
+	command.Flags().StringVar(&options.subject, "subject", "", usageSubject)
 	command.Flags().StringVar(&options.memoryType, "type", "", memoryTypeUsage(""))
 	command.Flags().StringVar(&options.content, "content", "", "memory content")
 	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
-	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
+	command.Flags().StringSliceVar(&options.related, "related", nil, usageRelated)
 	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related ids")
 	command.Flags().StringVar(&options.reason, "reason", "", "memory reason")
-	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
-	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
+	command.Flags().StringSliceVar(&options.tags, "tags", nil, usageTags)
+	command.Flags().StringVar(&options.metadataJSON, "metadata", "", usageMetadata)
 	command.Flags().StringVar(&options.source, "source", "", "memory source path or identifier")
-	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
+	command.Flags().StringVar(&options.expiresAt, flagExpiresAt, "", usageExpiry)
 	command.Flags().BoolVar(&options.clearExpiry, "clear-expiry", false, "remove expiration")
 	return command
+}
+
+// buildUpdateInput maps CLI flags onto an UpdateInput. Scalar fields share
+// one helper so updateCommand itself stays small.
+func buildUpdateInput(options *options) (app.UpdateInput, error) {
+	input := app.UpdateInput{ID: options.args()[0]}
+	applyOptionalString(options, &input.Subject, "subject", options.subject)
+	applyOptionalString(options, &input.Type, "type", options.memoryType)
+	applyOptionalString(options, &input.Reason, "reason", options.reason)
+	applyOptionalString(options, &input.Source, "source", options.source)
+	applyOptionalString(options, &input.ExpiresAt, flagExpiresAt, options.expiresAt)
+	if options.changed["tags"] {
+		input.Tags = options.tags
+		input.TagsSet = true
+	}
+	if options.changed["metadata"] {
+		metadata, err := parseMetadata(options.metadataJSON)
+		if err != nil {
+			return app.UpdateInput{}, err
+		}
+		input.Metadata = metadata
+		input.MetadataSet = true
+	}
+	if options.changed["clear-expiry"] && options.clearExpiry {
+		input.ClearExpiry = true
+	}
+	content, contentSet, err := updateContent(options)
+	if err != nil {
+		return app.UpdateInput{}, err
+	}
+	if contentSet {
+		input.Content = &content
+	}
+	if options.changed["related"] {
+		input.RelatedIDs = options.related
+		input.RelatedSet = true
+		input.Relation = options.relation
+	}
+	return input, nil
+}
+
+func applyOptionalString(options *options, target **string, flag, value string) {
+	if options.changed[flag] {
+		*target = &value
+	}
+}
+
+// updateContent resolves --file vs --content. File input wins when --file
+// is present; otherwise a directly passed --content is used as-is.
+func updateContent(options *options) (string, bool, error) {
+	if options.changed["file"] {
+		content, err := readContentInput(true, options.contentFile, "")
+		if err != nil {
+			return "", false, err
+		}
+		return content, true, nil
+	}
+	if options.changed["content"] {
+		return options.content, true, nil
+	}
+	return "", false, nil
 }
 
 func forgetCommand(options *options) *cobra.Command {
@@ -462,7 +489,7 @@ func contextCommand(options *options) *cobra.Command {
 	command.Flags().StringVar(&options.query, "query", "", "natural-language or keyword query")
 	command.Flags().StringVar(&options.matchMode, "match", "any", "term matching: all or any")
 	addFilterFlags(command, options)
-	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
+	command.Flags().BoolVar(&options.subtree, "subtree", true, usageSubtree)
 	command.Flags().IntVar(&options.limit, "limit", 10, "maximum number of context items")
 	_ = command.MarkFlagRequired("query")
 	return command
@@ -482,7 +509,17 @@ func importCommand(options *options) *cobra.Command {
 			if options.changed["type"] {
 				memoryType = options.memoryType
 			}
-			memory, err := service.ImportFile(ctx, options.args()[0], options.namespace, options.subject, memoryType, options.tags, metadata, options.expiresAt, options.related, options.relation)
+			memory, err := service.ImportFile(ctx, app.ImportInput{
+				Path:       options.args()[0],
+				Namespace:  options.namespace,
+				Subject:    options.subject,
+				MemoryType: memoryType,
+				Tags:       options.tags,
+				Metadata:   metadata,
+				ExpiresAt:  options.expiresAt,
+				RelatedIDs: options.related,
+				Relation:   options.relation,
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -493,13 +530,13 @@ func importCommand(options *options) *cobra.Command {
 		}),
 	}
 	addNamespaceFlag(command, options)
-	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
+	command.Flags().StringVar(&options.subject, "subject", "", usageSubject)
 	command.Flags().StringVar(&options.memoryType, "type", "doc", memoryTypeUsage("doc"))
-	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
+	command.Flags().StringSliceVar(&options.related, "related", nil, usageRelated)
 	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related memories")
-	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
-	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
-	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
+	command.Flags().StringSliceVar(&options.tags, "tags", nil, usageTags)
+	command.Flags().StringVar(&options.metadataJSON, "metadata", "", usageMetadata)
+	command.Flags().StringVar(&options.expiresAt, flagExpiresAt, "", usageExpiry)
 	return command
 }
 
@@ -519,7 +556,7 @@ func exportCommand(options *options) *cobra.Command {
 		}),
 	}
 	addNamespaceFlag(command, options)
-	command.Flags().BoolVar(&options.subtree, "subtree", true, "include memories from descendant namespaces")
+	command.Flags().BoolVar(&options.subtree, "subtree", true, usageSubtree)
 	command.Flags().StringVar(&options.format, "format", "json", "export format: json or markdown")
 	_ = command.MarkFlagRequired("namespace")
 	return command
@@ -605,16 +642,16 @@ func memoryTypeUsage(defaultValue string) string {
 
 func addMemoryFlags(command *cobra.Command, options *options) {
 	command.Flags().StringVar(&options.namespace, "namespace", "", "namespace path")
-	command.Flags().StringVar(&options.subject, "subject", "", "memory subject")
+	command.Flags().StringVar(&options.subject, "subject", "", usageSubject)
 	command.Flags().StringVar(&options.memoryType, "type", "fact", memoryTypeUsage("fact"))
 	command.Flags().StringVar(&options.content, "content", "", "memory content")
 	command.Flags().StringVar(&options.reason, "reason", "", "reason the memory is stored")
-	command.Flags().StringSliceVar(&options.tags, "tags", nil, "comma-separated tags")
+	command.Flags().StringSliceVar(&options.tags, "tags", nil, usageTags)
 	command.Flags().StringVar(&options.source, "source", "", "memory source path or identifier")
-	command.Flags().StringVar(&options.expiresAt, "expires-at", "", "expiration time in RFC3339")
-	command.Flags().StringVar(&options.metadataJSON, "metadata", "", "JSON object metadata")
+	command.Flags().StringVar(&options.expiresAt, flagExpiresAt, "", usageExpiry)
+	command.Flags().StringVar(&options.metadataJSON, "metadata", "", usageMetadata)
 	command.Flags().StringVar(&options.contentFile, "file", "", "read memory content from file path or - for stdin")
-	command.Flags().StringSliceVar(&options.related, "related", nil, "comma-separated memory ids or exact subjects in the namespace")
+	command.Flags().StringSliceVar(&options.related, "related", nil, usageRelated)
 	command.Flags().StringVar(&options.relation, "relation", "related", "relation label for related ids")
 	_ = command.MarkFlagRequired("namespace")
 	_ = command.MarkFlagRequired("subject")

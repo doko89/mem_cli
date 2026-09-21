@@ -191,10 +191,16 @@ func addTool[In any](server *mcp.Server, name, description string, fn mcp.ToolHa
 	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description}, fn)
 }
 
+// serviceOpener opens a fresh repository/service per tool call so both
+// stdio (one long-lived process) and HTTP (concurrent requests) share the
+// same safe, WAL-backed database semantics as the CLI.
+type serviceOpener func(ctx context.Context) (*app.Service, func(), error)
+
+// namespaceEnsurer applies mkdir -p semantics for MCP writers so agents
+// never need a separate bootstrap step. Creation is idempotent.
+type namespaceEnsurer func(ctx context.Context, service *app.Service, path string) error
+
 func registerTools(server *mcp.Server, databasePath string) {
-	// The handler closures open a fresh repository/service per call so both
-	// stdio (one long-lived process) and HTTP (concurrent requests) share the
-	// same safe, WAL-backed database semantics as the CLI.
 	open := func(ctx context.Context) (*app.Service, func(), error) {
 		repository, err := openRepository(ctx, databasePath)
 		if err != nil {
@@ -203,14 +209,16 @@ func registerTools(server *mcp.Server, databasePath string) {
 		service := app.NewService(repository.NamespaceRepository(), repository.MemoryRepository())
 		return service, func() { repository.Close() }, nil
 	}
-
-	// ensureNamespace applies the PRD's mkdir -p semantics for MCP writers so
-	// agents never need a separate bootstrap step. Creation is idempotent.
 	ensureNamespace := func(ctx context.Context, service *app.Service, path string) error {
 		_, _, err := service.CreateNamespace(ctx, path)
 		return err
 	}
+	registerMemoryWriteTools(server, open, ensureNamespace)
+	registerMemoryReadTools(server, open)
+	registerMemoryLifecycleTools(server, open, ensureNamespace)
+}
 
+func registerMemoryWriteTools(server *mcp.Server, open serviceOpener, ensureNamespace namespaceEnsurer) {
 	addTool(server, "memory_add", "Store a memory in a namespace. Use for facts, decisions, preferences, todos, entities, or docs. The namespace is created automatically if it does not exist yet (mkdir -p semantics).", func(ctx context.Context, _ *mcp.CallToolRequest, in addArgs) (*mcp.CallToolResult, any, error) {
 		memoryType, err := validType(in.Type)
 		if err != nil {
@@ -241,7 +249,9 @@ func registerTools(server *mcp.Server, databasePath string) {
 		}
 		return textResult(memory)
 	})
+}
 
+func registerMemoryReadTools(server *mcp.Server, open serviceOpener) {
 	addTool(server, "memory_export", "Export visible memories as a JSON array for portability. Supports filtering by namespace and time range.", func(ctx context.Context, _ *mcp.CallToolRequest, in exportArgs) (*mcp.CallToolResult, any, error) {
 		service, done, err := open(ctx)
 		if err != nil {
@@ -358,7 +368,9 @@ func registerTools(server *mcp.Server, databasePath string) {
 		}
 		return textResult(map[string]any{"memories": results})
 	})
+}
 
+func registerMemoryLifecycleTools(server *mcp.Server, open serviceOpener, ensureNamespace namespaceEnsurer) {
 	addTool(server, "memory_update", "Update mutable fields of a memory. Creates a new version automatically.", func(ctx context.Context, _ *mcp.CallToolRequest, in updateArgs) (*mcp.CallToolResult, any, error) {
 		if _, err := validType(in.Type); in.Type != "" && err != nil {
 			return nil, nil, err
@@ -368,39 +380,9 @@ func registerTools(server *mcp.Server, databasePath string) {
 			return nil, nil, toolError(err)
 		}
 		defer done()
-		// Merge semantics: when the client sends `metadata` without
-		// `metadata_set`, merge the new keys into the existing metadata
-		// (matching the tool schema description "merge metadata").
-		if in.Metadata != nil && !in.MetadataSet {
-			existing, err := service.GetMemory(ctx, in.ID, false)
-			if err != nil {
-				return nil, nil, toolError(err)
-			}
-			merged := make(map[string]any, len(existing.Metadata)+len(in.Metadata))
-			for k, v := range existing.Metadata {
-				merged[k] = v
-			}
-			for k, v := range in.Metadata {
-				merged[k] = v
-			}
-			in.Metadata = merged
-			in.MetadataSet = true
-		}
-		input := app.UpdateInput{
-			ID:          in.ID,
-			Subject:     optionalString(in.Subject),
-			Type:        optionalString(in.Type),
-			Content:     optionalString(in.Content),
-			Reason:      optionalString(in.Reason),
-			Tags:        in.Tags,
-			TagsSet:     in.ReplaceTags,
-			Metadata:    in.Metadata,
-			MetadataSet: in.MetadataSet,
-			ExpiresAt:   optionalString(in.ExpiresAt),
-			ClearExpiry: in.ClearExpiry,
-			RelatedIDs:  in.RelatedIDs,
-			RelatedSet:  in.ReplaceRelated,
-			Relation:    in.Relation,
+		input, err := lifecycleUpdateInput(ctx, service, &in)
+		if err != nil {
+			return nil, nil, err
 		}
 		memory, err := service.UpdateMemory(ctx, input)
 		if err != nil {
@@ -428,10 +410,8 @@ func registerTools(server *mcp.Server, databasePath string) {
 		if strings.TrimSpace(in.Content) == "" {
 			return nil, nil, fmt.Errorf("invalid_argument: content is required")
 		}
-		memoryType := in.Type
-		if strings.TrimSpace(memoryType) == "" {
-			memoryType = string(domain.TypeDoc)
-		} else if _, err := validType(memoryType); err != nil {
+		memoryType, err := defaultImportType(in.Type)
+		if err != nil {
 			return nil, nil, err
 		}
 		subject := in.Subject
@@ -501,11 +481,62 @@ func registerTools(server *mcp.Server, databasePath string) {
 	})
 }
 
+// lifecycleUpdateInput builds the UpdateInput for memory_update, applying
+// the merge-metadata semantics described in the tool schema.
+func lifecycleUpdateInput(ctx context.Context, service *app.Service, in *updateArgs) (app.UpdateInput, error) {
+	if in.Metadata != nil && !in.MetadataSet {
+		merged, err := mergeMetadata(ctx, service, in.ID, in.Metadata)
+		if err != nil {
+			return app.UpdateInput{}, err
+		}
+		in.Metadata = merged
+		in.MetadataSet = true
+	}
+	return app.UpdateInput{
+		ID:          in.ID,
+		Subject:     optionalString(in.Subject),
+		Type:        optionalString(in.Type),
+		Content:     optionalString(in.Content),
+		Reason:      optionalString(in.Reason),
+		Tags:        in.Tags,
+		TagsSet:     in.ReplaceTags,
+		Metadata:    in.Metadata,
+		MetadataSet: in.MetadataSet,
+		ExpiresAt:   optionalString(in.ExpiresAt),
+		ClearExpiry: in.ClearExpiry,
+		RelatedIDs:  in.RelatedIDs,
+		RelatedSet:  in.ReplaceRelated,
+		Relation:    in.Relation,
+	}, nil
+}
+
+func mergeMetadata(ctx context.Context, service *app.Service, id string, patch map[string]any) (map[string]any, error) {
+	existing, err := service.GetMemory(ctx, id, false)
+	if err != nil {
+		return nil, toolError(err)
+	}
+	merged := make(map[string]any, len(existing.Metadata)+len(patch))
+	for k, v := range existing.Metadata {
+		merged[k] = v
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	return merged, nil
+}
+
 func optionalString(value string) *string {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
 	return &value
+}
+
+func defaultImportType(memoryType string) (string, error) {
+	if strings.TrimSpace(memoryType) == "" {
+		return string(domain.TypeDoc), nil
+	}
+	return validType(memoryType)
 }
 
 func defaultSubjectFromFilename(filename string) string {

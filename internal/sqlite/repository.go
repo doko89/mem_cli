@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	// modernc.org/sqlite registers the pure-Go SQLite driver used by sql.Open.
 	_ "modernc.org/sqlite"
 
 	"mem_cli/internal/app"
@@ -28,6 +29,8 @@ type Namespaces struct {
 type Memories struct {
 	repository *Repository
 }
+
+const errFindNamespace = "unable to find namespace"
 
 func (r *Repository) NamespaceRepository() *Namespaces {
 	return &Namespaces{repository: r}
@@ -411,7 +414,7 @@ func (r *Repository) createMemory(ctx context.Context, memory domain.Memory) (do
 }
 
 func (r *Repository) getMemory(ctx context.Context, id string, includeExpired bool) (domain.Memory, error) {
-	query := memorySelect() + ` WHERE m.id = ?`
+	query := memoryByIDQuery
 	args := []any{id}
 	if !includeExpired {
 		query += ` AND (m.expires_at IS NULL OR m.expires_at >= ?)`
@@ -445,7 +448,7 @@ func (r *Repository) updateMemory(ctx context.Context, memory domain.Memory) (do
 	}()
 	var previous domain.Memory
 	var previousJSON string
-	row := tx.QueryRowContext(ctx, memorySelect()+` WHERE m.id = ?`, memory.ID)
+	row := tx.QueryRowContext(ctx, memoryByIDQuery, memory.ID)
 	previous, err = scanMemory(row)
 	if err == sql.ErrNoRows {
 		return domain.Memory{}, domain.NewMemoryNotFoundError(memory.ID)
@@ -489,7 +492,7 @@ func (r *Repository) deleteMemory(ctx context.Context, id string) error {
 			_ = tx.Rollback()
 		}
 	}()
-	row := tx.QueryRowContext(ctx, memorySelect()+` WHERE m.id = ?`, id)
+	row := tx.QueryRowContext(ctx, memoryByIDQuery, id)
 	memory, err := scanMemory(row)
 	if err == sql.ErrNoRows {
 		return domain.NewMemoryNotFoundError(id)
@@ -522,7 +525,7 @@ func (r *Repository) deleteMemory(ctx context.Context, id string) error {
 }
 
 func (r *Repository) listMemories(ctx context.Context, filter app.MemoryFilter) ([]domain.Memory, error) {
-	query := memorySelect() + ` WHERE ` + namespaceScope(filter.NamespaceID, filter.Subtree)
+	query := memorySelect + ` WHERE ` + namespaceScope(filter.NamespaceID, filter.Subtree)
 	args := namespaceScopeArgs(filter.NamespaceID, filter.Subtree)
 	if filter.Subject != "" {
 		query += ` AND m.subject = ?`
@@ -604,11 +607,14 @@ func (r *Repository) searchMemories(ctx context.Context, filter app.SearchFilter
 	return results, nil
 }
 
-func memorySelect() string {
-	return `SELECT m.id, m.namespace_id, n.normalized_name, m.subject, m.type, m.content, coalesce(m.reason, ''), coalesce(m.tags, 'null'), coalesce(m.metadata, 'null'), coalesce(m.source, 'null'), m.created_at, m.updated_at, coalesce(m.expires_at, '')
+// memorySelect is the shared column list for memory reads. Kept as a
+// constant so single-row lookups concatenate only compile-time strings.
+const memorySelect = `SELECT m.id, m.namespace_id, n.normalized_name, m.subject, m.type, m.content, coalesce(m.reason, ''), coalesce(m.tags, 'null'), coalesce(m.metadata, 'null'), coalesce(m.source, 'null'), m.created_at, m.updated_at, coalesce(m.expires_at, '')
 		FROM memories m
 		LEFT JOIN namespaces n ON n.id = m.namespace_id`
-}
+
+// memoryByIDQuery is the full single-row lookup statement.
+const memoryByIDQuery = memorySelect + ` WHERE m.id = ?`
 
 func scanMemories(rows *sql.Rows) ([]domain.Memory, error) {
 	memories := make([]domain.Memory, 0)
@@ -714,10 +720,7 @@ func nullableText(value string) any {
 }
 
 func nullableID(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
+	return nullableText(value)
 }
 
 func findNamespace(ctx context.Context, querier interface {
@@ -737,7 +740,7 @@ func findNamespace(ctx context.Context, querier interface {
 		return domain.Namespace{}, domain.NewNamespaceNotFoundError(target)
 	}
 	if err != nil {
-		return domain.Namespace{}, wrapDatabase("unable to find namespace", err)
+		return domain.Namespace{}, wrapDatabase(errFindNamespace, err)
 	}
 	return namespace, nil
 }
@@ -750,7 +753,7 @@ func findNamespaceByPath(ctx context.Context, tx *sql.Tx, path string) (domain.N
 		return domain.Namespace{}, false, nil
 	}
 	if err != nil {
-		return domain.Namespace{}, false, wrapDatabase("unable to find namespace", err)
+		return domain.Namespace{}, false, wrapDatabase(errFindNamespace, err)
 	}
 	return namespace, true, nil
 }
@@ -763,7 +766,7 @@ func (r *Repository) getNamespace(ctx context.Context, query string, args ...any
 		return domain.Namespace{}, domain.NewNamespaceNotFoundError(fmt.Sprint(args[0]))
 	}
 	if err != nil {
-		return domain.Namespace{}, wrapDatabase("unable to find namespace", err)
+		return domain.Namespace{}, wrapDatabase(errFindNamespace, err)
 	}
 	return namespace, nil
 }
@@ -809,31 +812,14 @@ func namespaceScopeArgs(namespace string, subtree bool) []any {
 
 var ftsSeparators = regexp.MustCompile(`[^\p{L}\p{N}_]+`)
 
-func buildFTSQuery(query string, matchMode string) (string, error) {
-	query = strings.TrimSpace(query)
+func buildFTSQuery(query, matchMode string) (string, error) {
 	parts := make([]string, 0)
-	for _, term := range strings.Fields(query) {
-		prefix := false
-		if strings.HasSuffix(term, "*") {
-			term = strings.TrimSuffix(term, "*")
-			prefix = true
+	for _, term := range strings.Fields(strings.TrimSpace(query)) {
+		termParts, err := ftsTermParts(term)
+		if err != nil {
+			return "", err
 		}
-		if strings.Contains(term, "*") {
-			return "", domain.NewInvalidArgumentError(`wildcard "*" is only supported at the end of a term`)
-		}
-		tokens := ftsSeparators.Split(term, -1)
-		for index, token := range tokens {
-			token = strings.TrimSpace(token)
-			if token == "" {
-				continue
-			}
-			tokenPrefix := ""
-			if prefix && index == len(tokens)-1 {
-				parts = append(parts, token+"*")
-				continue
-			}
-			parts = append(parts, `"`+token+`"`+tokenPrefix)
-		}
+		parts = append(parts, termParts...)
 	}
 	if len(parts) == 0 {
 		return "", domain.NewInvalidArgumentError("query must contain searchable text")
@@ -842,6 +828,38 @@ func buildFTSQuery(query string, matchMode string) (string, error) {
 		return strings.Join(parts, " OR "), nil
 	}
 	return strings.Join(parts, " AND "), nil
+}
+
+func ftsTermParts(term string) ([]string, error) {
+	prefix := false
+	if strings.HasSuffix(term, "*") {
+		term = strings.TrimSuffix(term, "*")
+		prefix = true
+	}
+	if strings.Contains(term, "*") {
+		return nil, domain.NewInvalidArgumentError(`wildcard "*" is only supported at the end of a term`)
+	}
+	tokens := ftsSeparators.Split(term, -1)
+	parts := make([]string, 0, len(tokens))
+	for index, token := range tokens {
+		part, ok := ftsTokenPart(token, prefix && index == len(tokens)-1)
+		if !ok {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts, nil
+}
+
+func ftsTokenPart(token string, prefix bool) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	if prefix {
+		return token + "*", true
+	}
+	return `"` + token + `"`, true
 }
 
 func wrapDatabase(message string, err error) error {

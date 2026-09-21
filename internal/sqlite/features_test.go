@@ -46,6 +46,14 @@ func TestMemoryOutputsResolveCurrentNamespacePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create nested namespace: %v", err)
 	}
+	memoryID := seedLinkedOwnerMemory(t, service, ctx)
+	assertNamespaceReadsResolvePath(t, service, ctx, namespace, memoryID)
+	assertRenamedNamespaceResolves(t, service, ctx, databasePath, namespace.ID, memoryID)
+	assertOrphanMemoryHasNilPath(t, service, ctx, databasePath)
+}
+
+func seedLinkedOwnerMemory(t *testing.T, service *app.Service, ctx context.Context) string {
+	t.Helper()
 	memory, err := service.AddMemory(ctx, app.AddInput{
 		Namespace: "a/b/c",
 		Subject:   "owner",
@@ -76,8 +84,12 @@ func TestMemoryOutputsResolveCurrentNamespacePath(t *testing.T) {
 	if updated.Namespace == nil || *updated.Namespace != "a/b/c" {
 		t.Fatalf("update namespace path: %#v", updated.Namespace)
 	}
+	return memory.ID
+}
 
-	details, err := service.GetMemory(ctx, memory.ID, false)
+func assertNamespaceReadsResolvePath(t *testing.T, service *app.Service, ctx context.Context, namespace domain.Namespace, memoryID string) {
+	t.Helper()
+	details, err := service.GetMemory(ctx, memoryID, false)
 	if err != nil {
 		t.Fatalf("get memory: %v", err)
 	}
@@ -87,6 +99,20 @@ func TestMemoryOutputsResolveCurrentNamespacePath(t *testing.T) {
 	if len(details.RelatedOut) != 1 || details.RelatedOut[0].Memory == nil || details.RelatedOut[0].Memory.Namespace == nil {
 		t.Fatalf("linked namespace resolution: %#v", details.RelatedOut)
 	}
+	assertListResolvesPath(t, service, ctx)
+	assertSearchResolvesPath(t, service, ctx, namespace.ID)
+	assertExportResolvesPath(t, service, ctx)
+	reverted, err := service.RevertMemory(ctx, memoryID, 1)
+	if err != nil {
+		t.Fatalf("revert memory: %v", err)
+	}
+	if reverted.Namespace == nil || *reverted.Namespace != "a/b/c" {
+		t.Fatalf("revert namespace path: %#v", reverted.Namespace)
+	}
+}
+
+func assertListResolvesPath(t *testing.T, service *app.Service, ctx context.Context) {
+	t.Helper()
 	list, err := service.ListMemories(ctx, app.MemoryFilter{NamespaceID: "a/b/c"})
 	if err != nil || len(list) != 2 {
 		t.Fatalf("list memories: count=%d err=%v", len(list), err)
@@ -96,13 +122,21 @@ func TestMemoryOutputsResolveCurrentNamespacePath(t *testing.T) {
 			t.Fatalf("list namespace resolution: %#v", item)
 		}
 	}
+}
+
+func assertSearchResolvesPath(t *testing.T, service *app.Service, ctx context.Context, namespaceID string) {
+	t.Helper()
 	search, err := service.SearchMemories(ctx, app.SearchFilter{NamespaceID: "a/b/c", Query: "namespace owner"})
 	if err != nil || len(search) != 1 {
 		t.Fatalf("search memories: results=%#v err=%v", search, err)
 	}
-	if search[0].NamespaceID != namespace.ID || search[0].Namespace == nil || *search[0].Namespace != "a/b/c" {
+	if search[0].NamespaceID != namespaceID || search[0].Namespace == nil || *search[0].Namespace != "a/b/c" {
 		t.Fatalf("search namespace resolution: %#v", search[0])
 	}
+}
+
+func assertExportResolvesPath(t *testing.T, service *app.Service, ctx context.Context) {
+	t.Helper()
 	exported, err := service.ExportMemories(ctx, "a/b/c", false)
 	if err != nil || len(exported) != 2 {
 		t.Fatalf("export memories: count=%d err=%v", len(exported), err)
@@ -112,32 +146,31 @@ func TestMemoryOutputsResolveCurrentNamespacePath(t *testing.T) {
 			t.Fatalf("export namespace resolution: %#v", item)
 		}
 	}
-	reverted, err := service.RevertMemory(ctx, memory.ID, 1)
-	if err != nil {
-		t.Fatalf("revert memory: %v", err)
-	}
-	if reverted.Namespace == nil || *reverted.Namespace != "a/b/c" {
-		t.Fatalf("revert namespace path: %#v", reverted.Namespace)
-	}
+}
 
+func assertRenamedNamespaceResolves(t *testing.T, service *app.Service, ctx context.Context, databasePath, namespaceID, memoryID string) {
+	t.Helper()
 	raw, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		t.Fatalf("open raw database: %v", err)
 	}
-	if _, err := raw.Exec(`UPDATE namespaces SET name = 'a/b/renamed', normalized_name = 'a/b/renamed' WHERE id = ?`, namespace.ID); err != nil {
+	if _, err := raw.Exec(`UPDATE namespaces SET name = 'a/b/renamed', normalized_name = 'a/b/renamed' WHERE id = ?`, namespaceID); err != nil {
 		t.Fatalf("rename namespace: %v", err)
 	}
 	if err := raw.Close(); err != nil {
 		t.Fatalf("close raw database: %v", err)
 	}
-	renamed, err := service.GetMemory(ctx, memory.ID, false)
+	renamed, err := service.GetMemory(ctx, memoryID, false)
 	if err != nil {
 		t.Fatalf("get renamed memory: %v", err)
 	}
 	if renamed.Namespace == nil || *renamed.Namespace != "a/b/renamed" {
 		t.Fatalf("renamed namespace path: %#v", renamed.Namespace)
 	}
+}
 
+func assertOrphanMemoryHasNilPath(t *testing.T, service *app.Service, ctx context.Context, databasePath string) {
+	t.Helper()
 	orphan, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		t.Fatalf("open orphan database: %v", err)
@@ -264,37 +297,41 @@ func TestRelatedTargetsResolveBySubjectWithIDPriority(t *testing.T) {
 	addTestMemory(t, service, base.ID[:8], "subject with an id prefix as its name", app.AddInput{})
 	unique := addTestMemory(t, service, "unique-target", "unique target", app.AddInput{})
 
-	source := addTestMemory(t, service, "by-subject", "by unique subject", app.AddInput{RelatedIDs: []string{"unique-target"}})
+	assertRelatedResolution(t, service, ctx, "by-subject", "by unique subject", "unique-target", unique.ID, "subject resolution")
+	assertRelatedResolution(t, service, ctx, "by-id", "exact id wins over subject", base.ID, base.ID, "exact id priority")
+	assertRelatedResolution(t, service, ctx, "by-prefix", "unique prefix wins over subject", base.ID[:8], base.ID, "prefix id priority")
+	assertUpdateSubjectResolution(t, service, ctx, unique.ID)
+	assertAmbiguousRelatedSubject(t, service, ctx)
+	assertMissingRelatedSubject(t, service, ctx)
+}
+
+func assertRelatedResolution(t *testing.T, service *app.Service, ctx context.Context, subject, content, relatedID, wantID, label string) {
+	t.Helper()
+	source := addTestMemory(t, service, subject, content, app.AddInput{RelatedIDs: []string{relatedID}})
 	details, err := service.GetMemory(ctx, source.ID, false)
-	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != unique.ID {
-		t.Fatalf("subject resolution: details=%#v err=%v", details, err)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != wantID {
+		t.Fatalf("%s: details=%#v err=%v", label, details, err)
 	}
+}
 
-	source = addTestMemory(t, service, "by-id", "exact id wins over subject", app.AddInput{RelatedIDs: []string{base.ID}})
-	details, err = service.GetMemory(ctx, source.ID, false)
-	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != base.ID {
-		t.Fatalf("exact id priority: details=%#v err=%v", details, err)
-	}
-
-	source = addTestMemory(t, service, "by-prefix", "unique prefix wins over subject", app.AddInput{RelatedIDs: []string{base.ID[:8]}})
-	details, err = service.GetMemory(ctx, source.ID, false)
-	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != base.ID {
-		t.Fatalf("prefix id priority: details=%#v err=%v", details, err)
-	}
-
+func assertUpdateSubjectResolution(t *testing.T, service *app.Service, ctx context.Context, wantID string) {
+	t.Helper()
 	updateSource := addTestMemory(t, service, "before-update", "before subject resolution", app.AddInput{})
 	updated, err := service.UpdateMemory(ctx, app.UpdateInput{ID: updateSource.ID, RelatedIDs: []string{"unique-target"}, RelatedSet: true})
 	if err != nil {
 		t.Fatalf("update by subject: %v", err)
 	}
-	details, err = service.GetMemory(ctx, updated.ID, false)
-	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != unique.ID {
+	details, err := service.GetMemory(ctx, updated.ID, false)
+	if err != nil || len(details.RelatedOut) != 1 || details.RelatedOut[0].ToID != wantID {
 		t.Fatalf("update subject resolution: details=%#v err=%v", details, err)
 	}
+}
 
+func assertAmbiguousRelatedSubject(t *testing.T, service *app.Service, ctx context.Context) {
+	t.Helper()
 	addTestMemory(t, service, "duplicate", "duplicate one", app.AddInput{})
 	addTestMemory(t, service, "duplicate", "duplicate two", app.AddInput{})
-	_, err = service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "ambiguous-source", Type: "fact", Content: "ambiguous source", RelatedIDs: []string{"duplicate"}})
+	_, err := service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "ambiguous-source", Type: "fact", Content: "ambiguous source", RelatedIDs: []string{"duplicate"}})
 	var domainError *domain.Error
 	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorAmbiguousSubject || len(domainError.SubjectCandidates) != 2 {
 		t.Fatalf("ambiguous subject: err=%#v", err)
@@ -304,8 +341,12 @@ func TestRelatedTargetsResolveBySubjectWithIDPriority(t *testing.T) {
 			t.Fatalf("ambiguous subject candidate: %#v", candidate)
 		}
 	}
+}
 
-	_, err = service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "missing-source", Type: "fact", Content: "missing source", RelatedIDs: []string{"missing"}})
+func assertMissingRelatedSubject(t *testing.T, service *app.Service, ctx context.Context) {
+	t.Helper()
+	_, err := service.AddMemory(ctx, app.AddInput{Namespace: "work/infra", Subject: "missing-source", Type: "fact", Content: "missing source", RelatedIDs: []string{"missing"}})
+	var domainError *domain.Error
 	if !errorAs(err, &domainError) || domainError.Code != domain.ErrorInvalidArgument || domainError.Message != `Related identifier "missing" not found as id or subject in namespace "work/infra".` {
 		t.Fatalf("missing related subject: err=%#v", err)
 	}

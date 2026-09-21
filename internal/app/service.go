@@ -380,7 +380,21 @@ func (s *Service) RevertMemory(ctx context.Context, id string, version int64) (d
 	return updated, nil
 }
 
-func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memoryType string, tags []string, metadata map[string]any, expiresAt string, relatedIDs []string, relation string) (domain.Memory, error) {
+// ImportInput groups the parameters for importing one file as one memory.
+type ImportInput struct {
+	Path       string
+	Namespace  string
+	Subject    string
+	MemoryType string
+	Tags       []string
+	Metadata   map[string]any
+	ExpiresAt  string
+	RelatedIDs []string
+	Relation   string
+}
+
+func (s *Service) ImportFile(ctx context.Context, input ImportInput) (domain.Memory, error) {
+	path := input.Path
 	if strings.TrimSpace(path) == "" {
 		return domain.Memory{}, domain.NewImportError("file path is required", nil)
 	}
@@ -394,9 +408,11 @@ func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memo
 	if err != nil {
 		return domain.Memory{}, domain.NewImportError("unable to read imported file", err)
 	}
+	memoryType := input.MemoryType
 	if strings.TrimSpace(memoryType) == "" {
 		memoryType = string(domain.TypeDoc)
 	}
+	subject := input.Subject
 	if strings.TrimSpace(subject) == "" {
 		if path == "-" {
 			subject = "stdin"
@@ -405,16 +421,16 @@ func (s *Service) ImportFile(ctx context.Context, path, namespace, subject, memo
 		}
 	}
 	return s.AddMemory(ctx, AddInput{
-		Namespace:  namespace,
+		Namespace:  input.Namespace,
 		Subject:    subject,
 		Type:       memoryType,
 		Content:    string(content),
-		Tags:       tags,
-		Metadata:   metadata,
-		ExpiresAt:  expiresAt,
+		Tags:       input.Tags,
+		Metadata:   input.Metadata,
+		ExpiresAt:  input.ExpiresAt,
 		Source:     path,
-		RelatedIDs: relatedIDs,
-		Relation:   relation,
+		RelatedIDs: input.RelatedIDs,
+		Relation:   input.Relation,
 	})
 }
 

@@ -40,6 +40,19 @@ func TestDocumentFileContentImportAndDocFilter(t *testing.T) {
 		t.Fatalf("write document: %v", err)
 	}
 
+	memoryID := addDocViaFile(t, database, document)
+	response, _ := runCommand(t, "--db", database, "get", memoryID)
+	retrieved := commandData(t, response)
+	if retrieved["content"] != content {
+		t.Fatalf("content was not byte-identical: got %#v want %q", retrieved["content"], content)
+	}
+
+	assertDocImport(t, database, document, content)
+	assertDocListFilters(t, database)
+}
+
+func addDocViaFile(t *testing.T, database, document string) string {
+	t.Helper()
 	response, exitCode := runCommand(t, "--db", database, "ns", "create", "work/infra")
 	if exitCode != 0 {
 		t.Fatalf("namespace exit code: %d response=%#v", exitCode, response)
@@ -56,13 +69,12 @@ func TestDocumentFileContentImportAndDocFilter(t *testing.T) {
 	if memoryID == "" {
 		t.Fatalf("missing memory id: %#v", added)
 	}
-	response, _ = runCommand(t, "--db", database, "get", memoryID)
-	retrieved := commandData(t, response)
-	if retrieved["content"] != content {
-		t.Fatalf("content was not byte-identical: got %#v want %q", retrieved["content"], content)
-	}
+	return memoryID
+}
 
-	response, exitCode = runCommand(t, "--db", database, "import", document, "--db", database, "--namespace", "work/infra", "--related", "manual")
+func assertDocImport(t *testing.T, database, document, content string) {
+	t.Helper()
+	response, exitCode := runCommand(t, "--db", database, "import", document, "--db", database, "--namespace", "work/infra", "--related", "manual")
 	if exitCode != 0 {
 		t.Fatalf("import exit code: %d response=%#v", exitCode, response)
 	}
@@ -81,8 +93,11 @@ func TestDocumentFileContentImportAndDocFilter(t *testing.T) {
 	if len(relatedOut) != 1 {
 		t.Fatalf("import response related_out: %#v", imported)
 	}
+}
 
-	response, _ = runCommand(t, "--db", database, "list", "--namespace", "work/infra")
+func assertDocListFilters(t *testing.T, database string) {
+	t.Helper()
+	response, _ := runCommand(t, "--db", database, "list", "--namespace", "work/infra")
 	listData := commandData(t, response)
 	memories, _ := listData["memories"].([]any)
 	if len(memories) != 2 {
@@ -104,9 +119,14 @@ func TestDocumentFileContentImportAndDocFilter(t *testing.T) {
 			t.Fatalf("invalid list snippet: %#v", snippet)
 		}
 	}
-	response, _ = runCommand(t, "--db", database, "list", "--namespace", "work/infra", "--type", "preference")
-	listData = commandData(t, response)
-	if memories, _ = listData["memories"].([]any); len(memories) != 0 {
+	assertEmptyPreferenceList(t, database)
+}
+
+func assertEmptyPreferenceList(t *testing.T, database string) {
+	t.Helper()
+	response, _ := runCommand(t, "--db", database, "list", "--namespace", "work/infra", "--type", "preference")
+	listData := commandData(t, response)
+	if memories, _ := listData["memories"].([]any); len(memories) != 0 {
 		t.Fatalf("expected no preferences, got %#v", memories)
 	}
 }
